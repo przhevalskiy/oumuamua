@@ -1,0 +1,46 @@
+# Agent Manifest Configuration
+
+build:
+  context:
+    root: ../
+    include_paths:
+      - web_scout
+    dockerfile: web_scout/Dockerfile
+    dockerignore: web_scout/.dockerignore
+
+local_development:
+  agent:
+    port: 8000
+    host_address: host.docker.internal
+  paths:
+    acp: project/acp.py
+    worker: project/run_worker.py
+
+agent:
+  acp_type: agentic
+  name: web-scout
+  description: "Agentic browser agent — prompt in, web actions out"
+  temporal:
+    enabled: true
+    workflows:
+      - name: web-scout
+        queue_name: web_scout_queue
+
+deployment:
+  image:
+    repository: ""
+    tag: "latest"
+  imagePullSecrets:
+    - name: my-registry-secret
+  global:
+    agent:
+      name: "web-scout"
+      description: "Agentic browser agent — prompt in, web actions out"
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
