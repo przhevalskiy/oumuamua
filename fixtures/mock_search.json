@@ -1,0 +1,14 @@
+{
+  "default": [
+    {
+      "title": "Mock Result 1",
+      "url": "https://example.com/article-1",
+      "snippet": "This is the first mock search result for testing purposes."
+    },
+    {
+      "title": "Mock Result 2",
+      "url": "https://example.com/article-2",
+      "snippet": "This is the second mock search result for testing purposes."
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "default": "<html><body><h1>Mock Page</h1><p>This is mock page content for testing the browser agent pipeline without real Playwright calls.</p></body></html>",
+  "https://example.com": "<html><body><h1>Example Domain</h1><p>This domain is for use in illustrative examples in documents. You may use this domain in literature without prior coordination or asking for permission.</p></body></html>"
+}
