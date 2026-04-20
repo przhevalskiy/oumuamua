@@ -4,6 +4,7 @@ Uses SECURITY_TOOLS (scan_secrets, scan_dependencies, read_file, run_sast, repor
 """
 from temporalio import activity
 
+from project.config import CLAUDE_HAIKU_MODEL
 from project.planner import next_step, PlannerStep, FinalAnswer, PlannerError
 from project.security_tools import SECURITY_TOOLS
 
@@ -25,7 +26,11 @@ async def plan_security_step(task_prompt: str, context: list[dict]) -> dict:
     """Execute one Claude planning step for the Security agent."""
     try:
         result, new_context = await next_step(
-            task_prompt, context, tools=SECURITY_TOOLS, system_prompt=_SECURITY_SYSTEM
+            task_prompt,
+            context,
+            tools=SECURITY_TOOLS,
+            system_prompt=_SECURITY_SYSTEM,
+            model=CLAUDE_HAIKU_MODEL,
         )
     except PlannerError as e:
         return {"type": "error", "message": str(e), "context": context}

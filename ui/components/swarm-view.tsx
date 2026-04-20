@@ -155,11 +155,93 @@ function parsePipeline(
   return { stages, finalReport, prUrl };
 }
 
+// ── Preview pane ──────────────────────────────────────────────────────────────
+
+function PreviewPane({
+  url,
+  manualUrl,
+  onUrlChange,
+}: {
+  url: string;
+  manualUrl: string;
+  onUrlChange: (v: string) => void;
+}) {
+  const [reloadKey, setReloadKey] = useState(0);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {/* Address bar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '0.5rem',
+        padding: '0.375rem 0.625rem', borderBottom: '1px solid var(--border)',
+        background: 'var(--background)', flexShrink: 0,
+      }}>
+        <input
+          value={manualUrl}
+          onChange={e => onUrlChange(e.target.value)}
+          placeholder={url ? url : 'http://localhost:3000'}
+          style={{
+            flex: 1, background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: '5px', padding: '0.25rem 0.5rem',
+            fontSize: '0.75rem', color: 'var(--text-primary)', fontFamily: 'monospace',
+            outline: 'none',
+          }}
+          onFocus={e => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+          onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
+          onKeyDown={e => { if (e.key === 'Enter') setReloadKey(k => k + 1); }}
+        />
+        <button
+          onClick={() => setReloadKey(k => k + 1)}
+          title="Reload"
+          style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0.2rem 0.3rem',
+            borderRadius: '4px', lineHeight: 1,
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-raised)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+        >
+          ↺
+        </button>
+      </div>
+
+      {/* iframe or empty state */}
+      {url ? (
+        <iframe
+          key={reloadKey}
+          src={url}
+          style={{ flex: 1, border: 'none', background: '#fff' }}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        />
+      ) : (
+        <div style={{
+          flex: 1, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: '0.75rem',
+          color: 'var(--text-secondary)',
+        }}>
+          <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth={1.25} strokeLinecap="round" style={{ opacity: 0.25 }}>
+            <rect x="2" y="3" width="20" height="14" rx="2" />
+            <path d="M8 21h8M12 17v4" />
+          </svg>
+          <p style={{ fontSize: '0.8rem', opacity: 0.4 }}>No preview URL yet</p>
+          <p style={{ fontSize: '0.72rem', opacity: 0.3 }}>
+            Enter a URL above or wait for the builder to start a dev server
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SwarmView({ taskId }: { taskId: string }) {
   const { data: task, isLoading: taskLoading } = useTask(taskId);
   const { data: messages, isLoading: msgsLoading } = useTaskMessages(taskId);
   const configRepoPath = useAgentConfigStore(s => s.config.swarmRepoPat);
   const [followUp, setFollowUp] = useState('');
+  const [centerTab, setCenterTab] = useState<'explorer' | 'preview'>('explorer');
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [manualUrl, setManualUrl] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const sendFollowUp = useSendFollowUp(taskId);
 
@@ -171,6 +253,19 @@ export function SwarmView({ taskId }: { taskId: string }) {
   const writtenPaths = extractWrittenPaths(messages ?? []);
   const { stages, finalReport, prUrl } = parsePipeline(messages, isDone, isFailed);
   const effectivelyDone = isDone || !!finalReport;
+
+  // Auto-detect dev server URL from messages
+  const detectedUrl = (() => {
+    const DEV_URL_RE = /https?:\/\/localhost:\d+/;
+    for (let i = (messages ?? []).length - 1; i >= 0; i--) {
+      const text = getTextContent((messages ?? [])[i]);
+      const m = text?.match(DEV_URL_RE);
+      if (m) return m[0];
+    }
+    return null;
+  })();
+
+  const activePreviewUrl = manualUrl.trim() || detectedUrl || '';
 
   const submitFollowUp = () => {
     const text = followUp.trim();
@@ -306,13 +401,50 @@ export function SwarmView({ taskId }: { taskId: string }) {
           </div>
         </div>
 
-        {/* Center: IDE file explorer */}
+        {/* Center: Explorer / Preview tabs */}
         <div style={{ borderRight: '1px solid var(--border)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          <FileExplorer
-            repoRoot={repoPath}
-            writtenPaths={writtenPaths}
-            isRunning={!effectivelyDone}
-          />
+          {/* Tab bar */}
+          <div style={{
+            display: 'flex', alignItems: 'stretch', flexShrink: 0,
+            borderBottom: '1px solid var(--border)', background: 'var(--background)',
+          }}>
+            {(['explorer', 'preview'] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setCenterTab(tab)}
+                style={{
+                  padding: '0 1.125rem', height: '36px', border: 'none', cursor: 'pointer',
+                  background: 'transparent', fontFamily: 'inherit',
+                  fontSize: '0.75rem', fontWeight: centerTab === tab ? 600 : 400,
+                  color: centerTab === tab ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  borderBottom: centerTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
+                  transition: 'color 0.1s',
+                  display: 'flex', alignItems: 'center', gap: '0.375rem',
+                }}
+              >
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {tab === 'preview' && activePreviewUrl && (
+                  <span style={{
+                    width: 6, height: 6, borderRadius: '50%',
+                    background: 'var(--success)', flexShrink: 0,
+                  }} />
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            {centerTab === 'explorer' ? (
+              <FileExplorer
+                repoRoot={repoPath}
+                writtenPaths={writtenPaths}
+                isRunning={!effectivelyDone}
+              />
+            ) : (
+              <PreviewPane url={activePreviewUrl} onUrlChange={setManualUrl} manualUrl={manualUrl} />
+            )}
+          </div>
         </div>
 
         {/* Right: pipeline + report */}

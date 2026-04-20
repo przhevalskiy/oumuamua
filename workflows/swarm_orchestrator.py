@@ -48,7 +48,7 @@ INSPECTOR_TIMEOUT = timedelta(minutes=15)
 SECURITY_TIMEOUT  = timedelta(minutes=10)
 DEVOPS_TIMEOUT    = timedelta(minutes=10)
 
-MAX_HEAL_CYCLES = 3
+MAX_HEAL_CYCLES = 2
 MAX_PARALLEL_TRACKS = 4
 
 
@@ -57,7 +57,7 @@ def _branch_name(task_id: str, prefix: str = "swarm") -> str:
     return f"{prefix}/{safe}"
 
 
-def _extract_tracks(architect_plan: dict) -> list[dict]:
+def _extract_tracks(architect_plan: dict, max_parallel_tracks: int = MAX_PARALLEL_TRACKS) -> list[dict]:
     """
     Extract parallel tracks from an architect plan.
     Falls back to a single 'main' track using the flat implementation_steps list
@@ -65,7 +65,7 @@ def _extract_tracks(architect_plan: dict) -> list[dict]:
     """
     tracks = architect_plan.get("tracks", [])
     if tracks:
-        return tracks[:MAX_PARALLEL_TRACKS]
+        return tracks[:max_parallel_tracks]
     # Backward compat: flat implementation_steps → single track
     steps = architect_plan.get("implementation_steps", [])
     return [{"label": "main", "implementation_steps": steps, "key_files": architect_plan.get("key_files", [])}]
@@ -136,7 +136,12 @@ class SwarmOrchestrator(BaseWorkflow):
         task_queue = environment_variables.WORKFLOW_TASK_QUEUE or "web_scout_queue"
         repo_path = params.params.get("repo_path", ".") if params.params else "."
         branch_prefix = params.params.get("branch_prefix", "swarm") if params.params else "swarm"
+        lightweight_mode = bool(params.params.get("lightweight_mode", False)) if params.params else False
         max_heal = int(params.params.get("max_heal_cycles", MAX_HEAL_CYCLES)) if params.params else MAX_HEAL_CYCLES
+        max_parallel_tracks = int(params.params.get("max_parallel_tracks", MAX_PARALLEL_TRACKS)) if params.params else MAX_PARALLEL_TRACKS
+        if lightweight_mode:
+            max_heal = 1
+            max_parallel_tracks = 1
 
         last_result = ""
         iteration = 0
@@ -150,6 +155,8 @@ class SwarmOrchestrator(BaseWorkflow):
                 branch=branch,
                 branch_prefix=branch_prefix,
                 max_heal=max_heal,
+                lightweight_mode=lightweight_mode,
+                max_parallel_tracks=max_parallel_tracks,
                 task_queue=task_queue,
                 iteration=iteration,
                 log=log,
@@ -204,6 +211,8 @@ class SwarmOrchestrator(BaseWorkflow):
         branch: str,
         branch_prefix: str,
         max_heal: int,
+        lightweight_mode: bool,
+        max_parallel_tracks: int,
         task_queue: str,
         iteration: int,
         log,
@@ -245,7 +254,7 @@ class SwarmOrchestrator(BaseWorkflow):
                 "repo_root": repo_path,
             }
 
-        tracks = _extract_tracks(architect_plan)
+        tracks = _extract_tracks(architect_plan, max_parallel_tracks=max_parallel_tracks)
         stack = ", ".join(architect_plan.get("tech_stack", [])[:4]) or "unknown stack"
         log.info("architect_complete", tracks=len(tracks))
 
@@ -385,23 +394,34 @@ class SwarmOrchestrator(BaseWorkflow):
             tracks = [{"label": "heal", "implementation_steps": heal_instructions, "key_files": []}]
 
         # ── Step 3: Security ──────────────────────────────────────────────────
-        await adk.messages.create(
-            task_id=task_id,
-            content=TextContent(author="agent", content="[Foreman] Dispatching Security — scanning secrets, deps, SAST"),
-        )
+        if lightweight_mode:
+            security_report = {
+                "passed": True,
+                "summary": "Security skipped in lightweight mode.",
+                "findings": [],
+            }
+            await adk.messages.create(
+                task_id=task_id,
+                content=TextContent(author="agent", content="[Foreman] Lightweight mode — skipping Security"),
+            )
+        else:
+            await adk.messages.create(
+                task_id=task_id,
+                content=TextContent(author="agent", content="[Foreman] Dispatching Security — scanning secrets, deps, SAST"),
+            )
 
-        security_json: str = await workflow.execute_child_workflow(
-            SecurityAgent.run,
-            args=[goal, repo_path, task_id],
-            id=f"{task_id}-r{iteration}-security",
-            task_queue=task_queue,
-            execution_timeout=SECURITY_TIMEOUT,
-        )
+            security_json: str = await workflow.execute_child_workflow(
+                SecurityAgent.run,
+                args=[goal, repo_path, task_id],
+                id=f"{task_id}-r{iteration}-security",
+                task_queue=task_queue,
+                execution_timeout=SECURITY_TIMEOUT,
+            )
 
-        try:
-            security_report = json.loads(security_json)
-        except (json.JSONDecodeError, ValueError):
-            security_report = {"passed": True, "summary": security_json, "findings": []}
+            try:
+                security_report = json.loads(security_json)
+            except (json.JSONDecodeError, ValueError):
+                security_report = {"passed": True, "summary": security_json, "findings": []}
 
         if not security_report.get("passed"):
             critical = [

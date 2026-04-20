@@ -4,6 +4,7 @@ Uses INSPECTOR_TOOLS (run_tests, run_lint, run_type_check, read_file, report_ins
 """
 from temporalio import activity
 
+from project.config import CLAUDE_SONNET_MODEL
 from project.planner import next_step, PlannerStep, FinalAnswer, PlannerError
 from project.inspector_tools import INSPECTOR_TOOLS
 
@@ -24,7 +25,11 @@ async def plan_inspector_step(task_prompt: str, context: list[dict]) -> dict:
     """Execute one Claude planning step for the Inspector agent."""
     try:
         result, new_context = await next_step(
-            task_prompt, context, tools=INSPECTOR_TOOLS, system_prompt=_INSPECTOR_SYSTEM
+            task_prompt,
+            context,
+            tools=INSPECTOR_TOOLS,
+            system_prompt=_INSPECTOR_SYSTEM,
+            model=CLAUDE_SONNET_MODEL,
         )
     except PlannerError as e:
         return {"type": "error", "message": str(e), "context": context}

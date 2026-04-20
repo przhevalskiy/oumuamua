@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import structlog
 from dataclasses import dataclass
 from typing import Any
@@ -58,6 +59,127 @@ def _extract_task_prompt(params: dict | None) -> str:
         or params.get("query")
         or str(params)
     )
+_PROMPT_CACHE_BETA = "prompt-caching-2024-07-31"
+_MAX_CONTEXT_CHARS = 200000
+_MAX_CONTEXT_TURNS = 10
+_RECENT_TURNS_TO_KEEP = 5
+_TOOL_RESULT_MAX_CHARS = 4000
+
+
+def _estimate_chars(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        return len(str(value))
+
+
+def _truncate_text(text: str, limit: int, suffix: str) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + suffix
+
+
+def _trim_block(block: dict[str, Any], limit: int = _TOOL_RESULT_MAX_CHARS) -> dict[str, Any]:
+    block_type = block.get("type")
+    if block_type == "tool_result":
+        trimmed = dict(block)
+        content = trimmed.get("content")
+        if isinstance(content, str):
+            trimmed["content"] = _truncate_text(
+                content,
+                limit,
+                "\n\n[Older tool output truncated to reduce token usage.]",
+            )
+        elif isinstance(content, list):
+            new_content: list[Any] = []
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    new_item = dict(item)
+                    new_item["text"] = _truncate_text(
+                        item["text"],
+                        limit,
+                        "\n\n[Older tool output truncated to reduce token usage.]",
+                    )
+                    new_content.append(new_item)
+                elif isinstance(item, str):
+                    new_content.append(_truncate_text(
+                        item,
+                        limit,
+                        "\n\n[Older tool output truncated to reduce token usage.]",
+                    ))
+                else:
+                    new_content.append(item)
+            trimmed["content"] = new_content
+        return trimmed
+    if block_type == "text" and isinstance(block.get("text"), str):
+        trimmed = dict(block)
+        trimmed["text"] = _truncate_text(
+            block["text"],
+            limit,
+            "\n\n[Older planner context truncated to reduce token usage.]",
+        )
+        return trimmed
+    return block
+
+
+def _trim_message(message: dict[str, Any], preserve_full: bool) -> dict[str, Any]:
+    if preserve_full:
+        return message
+    trimmed_message = dict(message)
+    content = trimmed_message.get("content")
+    if isinstance(content, str):
+        trimmed_message["content"] = _truncate_text(
+            content,
+            _TOOL_RESULT_MAX_CHARS,
+            "\n\n[Older planner context truncated to reduce token usage.]",
+        )
+        return trimmed_message
+    if isinstance(content, list):
+        trimmed_message["content"] = [
+            _trim_block(block) if isinstance(block, dict) else block
+            for block in content
+        ]
+    return trimmed_message
+
+
+def _trim_context(messages: list[dict[str, Any]], task_prompt: str) -> list[dict[str, Any]]:
+    if not messages:
+        return [{"role": "user", "content": task_prompt}]
+
+    working = list(messages)
+    if not working or working[0].get("role") != "user":
+        working = [{"role": "user", "content": task_prompt}] + working
+
+    if len(working) <= _MAX_CONTEXT_TURNS:
+        recent_context = working
+    else:
+        preserved_head = working[:1]
+        recent_tail = working[-(_RECENT_TURNS_TO_KEEP * 2):]
+        middle = working[1: len(working) - len(recent_tail)]
+        trimmed_middle = [_trim_message(message, preserve_full=False) for message in middle]
+        recent_context = preserved_head + trimmed_middle + recent_tail
+
+    while _estimate_chars(recent_context) > _MAX_CONTEXT_CHARS and len(recent_context) > 1:
+        if len(recent_context) > 1 + (_RECENT_TURNS_TO_KEEP * 2):
+            del recent_context[1]
+            continue
+        candidate_index = 1
+        candidate = recent_context[candidate_index]
+        recent_context[candidate_index] = _trim_message(candidate, preserve_full=False)
+        if _estimate_chars(recent_context[candidate_index]) >= _estimate_chars(candidate):
+            break
+
+    return recent_context
+
+
+def _cacheable_task_prompt(task_prompt: str) -> list[dict[str, Any]]:
+    return [{
+        "type": "text",
+        "text": task_prompt,
+        "cache_control": {"type": "ephemeral"},
+    }]
 
 
 async def _make_claude_request(client, kwargs: dict[str, Any]) -> Any:
@@ -74,7 +196,10 @@ async def _make_claude_request(client, kwargs: dict[str, Any]) -> Any:
     async with _LLM_SEMAPHORE:
         while retry_count <= config.max_retries:
             try:
-                response = await client.messages.create(**kwargs)
+                response = await client.messages.create(
+                    extra_headers={"anthropic-beta": _PROMPT_CACHE_BETA},
+                    **kwargs,
+                )
 
                 if hasattr(response, 'usage'):
                     tracker.add_tokens(
@@ -110,26 +235,32 @@ async def next_step(
     context: list[dict],
     tools: list[dict] | None = None,
     system_prompt: str | None = None,
+    model: str = CLAUDE_MODEL,
 ) -> tuple[PlannerResult, list[dict]]:
     """
     Make one Claude API call and return the next step plus the updated context.
     Context is never mutated in place — a new list is always returned.
     """
     if not context:
-        messages: list[dict] = [{"role": "user", "content": task_prompt}]
+        messages: list[dict] = [{"role": "user", "content": _cacheable_task_prompt(task_prompt)}]
     else:
-        messages = context
+        messages = _trim_context(context, task_prompt)
 
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     system = system_prompt or _DEFAULT_SYSTEM
+    system_payload: list[dict[str, Any]] = [{
+        "type": "text",
+        "text": system,
+        "cache_control": {"type": "ephemeral"},
+    }]
 
     log = logger.bind(turn=len([m for m in messages if m["role"] == "assistant"]) + 1)
-    log.info("planner_call", model=CLAUDE_MODEL, message_count=len(messages))
+    log.info("planner_call", model=model, message_count=len(messages))
 
     kwargs: dict[str, Any] = dict(
-        model=CLAUDE_MODEL,
+        model=model,
         max_tokens=8192,
-        system=system,
+        system=system_payload,
         messages=messages,
     )
     if tools:

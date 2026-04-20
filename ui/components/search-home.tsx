@@ -4,6 +4,7 @@ import { useState, useRef, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCreateTask } from '@/hooks/use-create-task';
 import { useAgentConfigStore } from '@/lib/agent-config-store';
+import { saveReport } from '@/lib/report-store';
 
 const SWARM_SUGGESTIONS = [
   'Add input validation to all API endpoints',
@@ -38,7 +39,10 @@ export function SearchHome() {
         max_heal_cycles: swarmConfig.swarmMaxHealCycles,
       },
     }, {
-      onSuccess: (task) => router.push(`/task/${task.id}`),
+      onSuccess: (task) => {
+        saveReport({ taskId: task.id, query: trimmed, answer: '', createdAt: new Date().toISOString() });
+        router.push(`/task/${task.id}`);
+      },
       onError: (err) =>
         setError(err instanceof Error ? err.message : 'Failed to start. Is the agent running?'),
     });

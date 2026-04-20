@@ -7,45 +7,52 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Navy palette – primary brand colour for a legal company
-        navy: {
-          50:  '#eef2f9',
-          100: '#d5dff0',
-          200: '#adbfe1',
-          300: '#7a96cc',
-          400: '#4f6eb8',
-          500: '#2f4f9e',
-          600: '#243d80',
-          700: '#1b2e62',
-          800: '#122044',
-          900: '#0b1428',
-          950: '#060b18',
-        },
-        // Gold palette – accent colour for headings, badges, and CTAs
-        gold: {
-          50:  '#fdfaee',
-          100: '#faf3d2',
-          200: '#f5e49f',
-          300: '#eece5e',
-          400: '#e8b93a',
-          500: '#d4a017',
-          600: '#b07d10',
-          700: '#895d0f',
-          800: '#6b4710',
-          900: '#583b12',
-          950: '#321f05',
+        abstract: {
+          violet:      '#7C3AED',
+          cyan:        '#06B6D4',
+          amber:       '#F59E0B',
+          rose:        '#F43F5E',
+          emerald:     '#10B981',
+          'deep-purple': '#1E0A3C',
+          'near-black':  '#0D0D1A',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans: ['"Space Grotesk"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
-      boxShadow: {
-        card: '0 2px 12px 0 rgba(11,20,40,0.10)',
-        'card-hover': '0 6px 24px 0 rgba(11,20,40,0.18)',
+      keyframes: {
+        'cell-pop': {
+          '0%':   { transform: 'scale(0)' },
+          '70%':  { transform: 'scale(1.15)' },
+          '100%': { transform: 'scale(1)' },
+        },
+        'glow-pulse': {
+          '0%, 100%': {
+            boxShadow: '0 0 8px 2px rgba(124,58,237,0.4), 0 0 24px 6px rgba(6,182,212,0.15)',
+          },
+          '50%': {
+            boxShadow: '0 0 20px 6px rgba(124,58,237,0.75), 0 0 48px 12px rgba(6,182,212,0.35)',
+          },
+        },
+        'fade-slide-in': {
+          '0%':   { opacity: '0', transform: 'translateY(18px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        'spin-slow': {
+          '0%':   { transform: 'rotate(0deg)' },
+          '100%': { transform: 'rotate(360deg)' },
+        },
+        'stroke-draw': {
+          '0%':   { strokeDashoffset: '60' },
+          '100%': { strokeDashoffset: '0' },
+        },
       },
-      borderRadius: {
-        xl: '1rem',
-        '2xl': '1.25rem',
+      animation: {
+        'cell-pop':      'cell-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both',
+        'glow-pulse':    'glow-pulse 2.4s ease-in-out infinite',
+        'fade-slide-in': 'fade-slide-in 0.5s ease-out both',
+        'spin-slow':     'spin-slow 20s linear infinite',
+        'stroke-draw':   'stroke-draw 0.45s ease-out both',
       },
     },
   },

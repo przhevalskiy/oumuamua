@@ -20,7 +20,7 @@ with workflow.unsafe.imports_passed_through():
 
 logger = structlog.get_logger(__name__)
 
-MAX_BUILDER_TURNS = 40
+MAX_BUILDER_TURNS = 30
 
 PLANNER_OPTIONS = {
     "start_to_close_timeout": timedelta(seconds=120),
@@ -88,15 +88,19 @@ class BuilderAgent:
             ),
         )
 
+        repo_root = architect_plan.get('repo_root', '.')
+
         task_prompt = (
             f"You are the Builder agent{f' working on the {track_label} track' if track_label else ''}. "
             f"Your goal:\n{goal}\n\n"
             f"Tech stack: {', '.join(architect_plan.get('tech_stack', []))}\n"
-            f"Repo root: {architect_plan.get('repo_root', '.')}\n\n"
+            f"Repo root: {repo_root}\n\n"
             f"Key files:\n{key_files_text}\n\n"
             f"Implementation steps:\n{steps_text}"
             f"{heal_section}\n\n"
             "RULES — read carefully before starting:\n"
+            f"- ALL file paths MUST be absolute, starting with {repo_root}. "
+            f"Example: {repo_root}/src/App.tsx — NEVER just src/App.tsx.\n"
             "- Use read_file to read files. NEVER use run_command to cat or read files.\n"
             "- NEVER run npm install, yarn, pip install, vite build, tsc, or any package/build command.\n"
             "- Use write_file for new files, patch_file for edits to existing files.\n"

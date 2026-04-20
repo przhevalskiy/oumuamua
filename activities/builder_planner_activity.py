@@ -6,6 +6,7 @@ import json
 
 from temporalio import activity
 
+from project.config import CLAUDE_SONNET_MODEL
 from project.planner import next_step, PlannerStep, FinalAnswer, PlannerError
 from project.builder_tools import BUILDER_TOOLS
 
@@ -30,7 +31,11 @@ async def plan_builder_step(task_prompt: str, context: list[dict]) -> dict:
     """Execute one Claude planning step for the Builder agent."""
     try:
         result, new_context = await next_step(
-            task_prompt, context, tools=BUILDER_TOOLS, system_prompt=_BUILDER_SYSTEM
+            task_prompt,
+            context,
+            tools=BUILDER_TOOLS,
+            system_prompt=_BUILDER_SYSTEM,
+            model=CLAUDE_SONNET_MODEL,
         )
     except PlannerError as e:
         return {"type": "error", "message": str(e), "context": context}

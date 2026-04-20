@@ -74,7 +74,14 @@ async def swarm_list_directory(path: str, max_depth: int = 2) -> str:
 async def swarm_read_file(path: str) -> str:
     """Read a file and return its contents."""
     try:
-        return Path(path).read_text(encoding="utf-8", errors="replace")
+        content = Path(path).read_text(encoding="utf-8", errors="replace")
+        if len(content) <= 8000:
+            return content
+        return (
+            content[:8000]
+            + f"\n\n[TRUNCATED: showing first 8000 of {len(content)} characters. "
+              "Request a narrower file section if more context is needed.]"
+        )
     except FileNotFoundError:
         return f"Error: file '{path}' not found."
     except Exception as e:

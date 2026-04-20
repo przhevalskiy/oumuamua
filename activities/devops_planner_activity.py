@@ -5,6 +5,7 @@ create_pull_request, report_devops).
 """
 from temporalio import activity
 
+from project.config import CLAUDE_HAIKU_MODEL
 from project.planner import next_step, PlannerStep, FinalAnswer, PlannerError
 from project.devops_tools import DEVOPS_TOOLS
 
@@ -26,7 +27,11 @@ async def plan_devops_step(task_prompt: str, context: list[dict]) -> dict:
     """Execute one Claude planning step for the DevOps agent."""
     try:
         result, new_context = await next_step(
-            task_prompt, context, tools=DEVOPS_TOOLS, system_prompt=_DEVOPS_SYSTEM
+            task_prompt,
+            context,
+            tools=DEVOPS_TOOLS,
+            system_prompt=_DEVOPS_SYSTEM,
+            model=CLAUDE_HAIKU_MODEL,
         )
     except PlannerError as e:
         return {"type": "error", "message": str(e), "context": context}
