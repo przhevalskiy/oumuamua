@@ -43,9 +43,15 @@ class InspectorAgent:
     """
 
     @workflow.run
-    async def run(self, goal: str, repo_path: str, parent_task_id: str) -> str:
+    async def run(
+        self,
+        goal: str,
+        repo_path: str,
+        parent_task_id: str,
+        pre_existing_tests: list[str] | None = None,
+    ) -> str:
         log = logger.bind(parent_task_id=parent_task_id)
-        log.info("inspector_started")
+        log.info("inspector_started", pre_existing_tests=len(pre_existing_tests or []))
 
         await adk.messages.create(
             task_id=parent_task_id,
@@ -55,9 +61,18 @@ class InspectorAgent:
             ),
         )
 
+        regression_note = ""
+        if pre_existing_tests:
+            tests_str = "\n".join(f"  - {t}" for t in pre_existing_tests[:20])
+            regression_note = (
+                f"\n\nPre-existing test files (regression check — these MUST still pass):\n{tests_str}\n"
+                "If any of these tests now fail, that is a regression — list it as a HIGH priority heal instruction."
+            )
+
         task_prompt = (
             f"You are the Inspector agent. Your goal:\n{goal}\n\n"
-            f"Repository root: {repo_path}\n\n"
+            f"Repository root: {repo_path}\n"
+            f"{regression_note}\n"
             "Instructions:\n"
             "1. Run the test suite first (e.g. 'pytest --tb=short -q' or 'npm test -- --run').\n"
             "2. Run the linter (e.g. 'ruff check .' or 'eslint src/').\n"
