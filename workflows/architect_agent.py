@@ -78,10 +78,12 @@ class ArchitectAgent:
         task_prompt = (
             f"You are the Architect agent. Your goal:\n{goal}\n\n"
             f"Repository root: {repo_path}\n"
+            f"IMPORTANT: ALL tool calls (list_directory, read_file) MUST use absolute paths "
+            f"starting with {repo_path}. NEVER use relative paths like '.' or 'src/'.\n"
             f"{history_block}\n"
             "Instructions:\n"
-            "1. Start by listing the root directory to understand the project layout.\n"
-            "2. Read key config files (pyproject.toml, package.json, README, etc.).\n"
+            f"1. Start by listing the root directory: list_directory(path='{repo_path}').\n"
+            "2. Read key config files (pyproject.toml, package.json, README, etc.) using absolute paths.\n"
             "3. Read the main entry points and core modules relevant to the goal.\n"
             "4. Identify the tech stack, key files, and dependencies.\n"
             "5. Decompose the goal into INDEPENDENT parallel tracks:\n"
@@ -89,7 +91,7 @@ class ArchitectAgent:
             "   - Use 1 track for simple tasks, 2-4 for larger ones.\n"
             "   - Example tracks: 'backend', 'frontend', 'tests', 'infra', 'docs'.\n"
             "   - Tracks run SIMULTANEOUSLY — they must not depend on each other.\n"
-            "6. Call report_plan with the tracks array when ready."
+            f"6. Call report_plan with repo_root='{repo_path}' and the tracks array when ready."
         )
 
         context: list[dict] = []

@@ -5,12 +5,13 @@ ARCHITECT_TOOLS: list[dict] = [
         "name": "list_directory",
         "description": (
             "List the contents of a directory in the repository. "
+            "ALWAYS pass the absolute path (e.g. the repo_root you were given, or a subdirectory of it). "
             "Use this to explore the project structure before reading files."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Relative path to the directory (e.g. '.' or 'src/')."},
+                "path": {"type": "string", "description": "Absolute path to the directory (e.g. '/Users/alice/myproject' or '/Users/alice/myproject/src')."},
                 "max_depth": {"type": "integer", "description": "Max recursion depth (default 2).", "default": 2},
             },
             "required": ["path"],
@@ -18,11 +19,11 @@ ARCHITECT_TOOLS: list[dict] = [
     },
     {
         "name": "read_file",
-        "description": "Read the contents of a file in the repository.",
+        "description": "Read the contents of a file in the repository. ALWAYS use the absolute path.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Relative path to the file."},
+                "path": {"type": "string", "description": "Absolute path to the file (e.g. '/Users/alice/myproject/src/main.py')."},
             },
             "required": ["path"],
         },
