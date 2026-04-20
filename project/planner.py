@@ -60,119 +60,136 @@ def _extract_task_prompt(params: dict | None) -> str:
         or str(params)
     )
 _PROMPT_CACHE_BETA = "prompt-caching-2024-07-31"
-_MAX_CONTEXT_CHARS = 200000
-_MAX_CONTEXT_TURNS = 10
-_RECENT_TURNS_TO_KEEP = 5
-_TOOL_RESULT_MAX_CHARS = 4000
+_TOOL_RESULT_MAX_CHARS = 800    # hard cap on any single tool result
+_SUMMARIZE_AFTER_TURNS = 6      # compress history every N assistant turns
+_KEEP_RECENT_TURNS = 3          # always keep last N turn-pairs fresh
 
 
-def _estimate_chars(value: Any) -> int:
-    if isinstance(value, str):
-        return len(value)
-    try:
-        return len(json.dumps(value, ensure_ascii=False))
-    except Exception:
-        return len(str(value))
+# ── 1. Tool result truncation ─────────────────────────────────────────────────
 
-
-def _truncate_text(text: str, limit: int, suffix: str) -> str:
+def _truncate_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + suffix
+    return text[:limit] + "\n[truncated]"
 
 
-def _trim_block(block: dict[str, Any], limit: int = _TOOL_RESULT_MAX_CHARS) -> dict[str, Any]:
-    block_type = block.get("type")
-    if block_type == "tool_result":
-        trimmed = dict(block)
-        content = trimmed.get("content")
-        if isinstance(content, str):
-            trimmed["content"] = _truncate_text(
-                content,
-                limit,
-                "\n\n[Older tool output truncated to reduce token usage.]",
-            )
-        elif isinstance(content, list):
-            new_content: list[Any] = []
-            for item in content:
-                if isinstance(item, dict) and isinstance(item.get("text"), str):
-                    new_item = dict(item)
-                    new_item["text"] = _truncate_text(
-                        item["text"],
-                        limit,
-                        "\n\n[Older tool output truncated to reduce token usage.]",
-                    )
-                    new_content.append(new_item)
-                elif isinstance(item, str):
-                    new_content.append(_truncate_text(
-                        item,
-                        limit,
-                        "\n\n[Older tool output truncated to reduce token usage.]",
-                    ))
-                else:
-                    new_content.append(item)
-            trimmed["content"] = new_content
-        return trimmed
-    if block_type == "text" and isinstance(block.get("text"), str):
-        trimmed = dict(block)
-        trimmed["text"] = _truncate_text(
-            block["text"],
-            limit,
-            "\n\n[Older planner context truncated to reduce token usage.]",
-        )
-        return trimmed
+def _cap_tool_result(block: dict[str, Any]) -> dict[str, Any]:
+    if block.get("type") != "tool_result":
+        return block
+    content = block.get("content", "")
+    if isinstance(content, str):
+        return {**block, "content": _truncate_text(content, _TOOL_RESULT_MAX_CHARS)}
+    if isinstance(content, list):
+        capped = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                capped.append({**item, "text": _truncate_text(item["text"], _TOOL_RESULT_MAX_CHARS)})
+            else:
+                capped.append(item)
+        return {**block, "content": capped}
     return block
 
 
-def _trim_message(message: dict[str, Any], preserve_full: bool) -> dict[str, Any]:
-    if preserve_full:
-        return message
-    trimmed_message = dict(message)
-    content = trimmed_message.get("content")
-    if isinstance(content, str):
-        trimmed_message["content"] = _truncate_text(
-            content,
-            _TOOL_RESULT_MAX_CHARS,
-            "\n\n[Older planner context truncated to reduce token usage.]",
-        )
-        return trimmed_message
-    if isinstance(content, list):
-        trimmed_message["content"] = [
-            _trim_block(block) if isinstance(block, dict) else block
-            for block in content
-        ]
-    return trimmed_message
-
-
-def _trim_context(messages: list[dict[str, Any]], task_prompt: str) -> list[dict[str, Any]]:
-    if not messages:
-        return [{"role": "user", "content": task_prompt}]
-
-    working = list(messages)
-    if not working or working[0].get("role") != "user":
-        working = [{"role": "user", "content": task_prompt}] + working
-
-    if len(working) <= _MAX_CONTEXT_TURNS:
-        recent_context = working
-    else:
-        preserved_head = working[:1]
-        recent_tail = working[-(_RECENT_TURNS_TO_KEEP * 2):]
-        middle = working[1: len(working) - len(recent_tail)]
-        trimmed_middle = [_trim_message(message, preserve_full=False) for message in middle]
-        recent_context = preserved_head + trimmed_middle + recent_tail
-
-    while _estimate_chars(recent_context) > _MAX_CONTEXT_CHARS and len(recent_context) > 1:
-        if len(recent_context) > 1 + (_RECENT_TURNS_TO_KEEP * 2):
-            del recent_context[1]
+def _cap_all_tool_results(context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for msg in context:
+        if msg.get("role") != "user" or not isinstance(msg.get("content"), list):
+            result.append(msg)
             continue
-        candidate_index = 1
-        candidate = recent_context[candidate_index]
-        recent_context[candidate_index] = _trim_message(candidate, preserve_full=False)
-        if _estimate_chars(recent_context[candidate_index]) >= _estimate_chars(candidate):
-            break
+        result.append({**msg, "content": [
+            _cap_tool_result(b) if isinstance(b, dict) else b
+            for b in msg["content"]
+        ]})
+    return result
 
-    return recent_context
 
+# ── 2. Consume already-processed read_file results ────────────────────────────
+
+def _consume_read_results(context: list[dict[str, Any]], keep_last: int = 1) -> list[dict[str, Any]]:
+    """Replace old read_file results with a consumed marker — keep only the last `keep_last`."""
+    read_ids: list[str] = []
+    for msg in context:
+        if msg.get("role") != "assistant":
+            continue
+        for block in (msg.get("content") or []):
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "read_file":
+                read_ids.append(block["id"])
+
+    consume = set(read_ids[:-keep_last] if keep_last > 0 else read_ids)
+    if not consume:
+        return context
+
+    result = []
+    for msg in context:
+        if msg.get("role") != "user" or not isinstance(msg.get("content"), list):
+            result.append(msg)
+            continue
+        new_blocks = []
+        for block in msg["content"]:
+            if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("tool_use_id") in consume:
+                new_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": block["tool_use_id"],
+                    "content": "[file content consumed]",
+                })
+            else:
+                new_blocks.append(block)
+        result.append({**msg, "content": new_blocks})
+    return result
+
+
+# ── 3. Periodic summarization ─────────────────────────────────────────────────
+
+def _extract_tool_actions(context: list[dict[str, Any]]) -> dict[str, list[str]]:
+    written: list[str] = []
+    read: list[str] = []
+    run: list[str] = []
+    for msg in context:
+        if msg.get("role") != "assistant":
+            continue
+        for block in (msg.get("content") or []):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = block.get("name", "")
+            path = block.get("input", {}).get("path") or block.get("input", {}).get("command", "")
+            if name in ("write_file", "patch_file"):
+                written.append(path)
+            elif name == "read_file":
+                read.append(path)
+            elif name == "run_command":
+                run.append(path)
+    return {"written": written, "read": read, "run": run}
+
+
+def _compress_context(context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """After SUMMARIZE_AFTER_TURNS turns, collapse middle history into a compact summary."""
+    assistant_turns = sum(1 for m in context if m.get("role") == "assistant")
+    if assistant_turns < _SUMMARIZE_AFTER_TURNS:
+        return context
+
+    actions = _extract_tool_actions(context)
+    parts = []
+    if actions["written"]:
+        # dedupe preserving order
+        seen: dict[str, None] = {}
+        for p in actions["written"]:
+            seen[p] = None
+        parts.append("Written/patched: " + ", ".join(seen))
+    if actions["read"]:
+        seen2: dict[str, None] = {}
+        for p in actions["read"]:
+            seen2[p] = None
+        parts.append("Read: " + ", ".join(seen2))
+    if actions["run"]:
+        parts.append("Commands: " + ", ".join(actions["run"]))
+
+    summary = "[Progress — " + ". ".join(parts) + ".]" if parts else "[No file operations yet.]"
+
+    tail = context[-(_KEEP_RECENT_TURNS * 2):]
+    return [context[0], {"role": "user", "content": summary}] + tail
+
+
+# ── Cacheable task prompt ─────────────────────────────────────────────────────
 
 def _cacheable_task_prompt(task_prompt: str) -> list[dict[str, Any]]:
     return [{
@@ -244,7 +261,10 @@ async def next_step(
     if not context:
         messages: list[dict] = [{"role": "user", "content": _cacheable_task_prompt(task_prompt)}]
     else:
-        messages = _trim_context(context, task_prompt)
+        ctx = _consume_read_results(context)
+        ctx = _compress_context(ctx)
+        ctx = _cap_all_tool_results(ctx)
+        messages = ctx
 
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     system = system_prompt or _DEFAULT_SYSTEM
