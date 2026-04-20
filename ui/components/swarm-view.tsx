@@ -8,6 +8,7 @@ import { MessageFeed } from '@/components/message-feed';
 import { ChibiAvatar, type SwarmRole } from '@/components/chibi-avatar';
 import { FileExplorer } from '@/components/file-explorer';
 import { useAgentConfigStore } from '@/lib/agent-config-store';
+import { useFileAttachments, buildAttachmentBlock } from '@/hooks/use-file-attachments';
 import type { Task } from 'agentex/resources';
 import type { TaskMessage } from 'agentex/resources';
 
@@ -243,7 +244,9 @@ export function SwarmView({ taskId }: { taskId: string }) {
   const [previewUrl, setPreviewUrl] = useState('');
   const [manualUrl, setManualUrl] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const followUpFileInputRef = useRef<HTMLInputElement>(null);
   const sendFollowUp = useSendFollowUp(taskId);
+  const { files: followUpFiles, error: followUpFileError, addFiles: addFollowUpFiles, removeFile: removeFollowUpFile, clearAll: clearFollowUpFiles } = useFileAttachments();
 
   const status = task?.status ?? 'RUNNING';
   const isDone = status === 'COMPLETED' || status === 'FAILED';
@@ -270,7 +273,9 @@ export function SwarmView({ taskId }: { taskId: string }) {
   const submitFollowUp = () => {
     const text = followUp.trim();
     if (!text || sendFollowUp.isPending) return;
-    sendFollowUp.mutate(text, { onSuccess: () => setFollowUp('') });
+    const attachmentBlock = buildAttachmentBlock(followUpFiles);
+    const fullText = text + attachmentBlock;
+    sendFollowUp.mutate(fullText, { onSuccess: () => { setFollowUp(''); clearFollowUpFiles(); } });
   };
 
   if (taskLoading && !task) {
@@ -356,6 +361,37 @@ export function SwarmView({ taskId }: { taskId: string }) {
             flexShrink: 0,
             background: 'var(--background)',
           }}>
+            {/* Hidden file input */}
+            <input
+              ref={followUpFileInputRef}
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={e => { if (e.target.files) { addFollowUpFiles(e.target.files); e.target.value = ''; } }}
+            />
+
+            {/* File chips */}
+            {followUpFiles.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.4rem' }}>
+                {followUpFiles.map((f, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: '0.25rem',
+                    background: 'var(--surface-raised)', border: '1px solid var(--border)',
+                    borderRadius: '5px', padding: '0.15rem 0.4rem',
+                    fontSize: '0.68rem', color: 'var(--text-secondary)',
+                    maxWidth: '160px',
+                  }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFollowUpFile(i)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-secondary)', lineHeight: 1, fontSize: '0.7rem' }}
+                    >✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <textarea
               ref={inputRef}
               value={followUp}
@@ -363,6 +399,8 @@ export function SwarmView({ taskId }: { taskId: string }) {
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitFollowUp(); }
               }}
+              onDragOver={e => e.preventDefault()}
+              onDrop={e => { e.preventDefault(); if (e.dataTransfer.files.length) addFollowUpFiles(e.dataTransfer.files); }}
               placeholder={effectivelyDone ? 'Send a follow-up to the foreman…' : 'Foreman is building — queue a follow-up…'}
               rows={2}
               style={{
@@ -376,13 +414,32 @@ export function SwarmView({ taskId }: { taskId: string }) {
               onFocus={e => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
               onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
             />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.375rem', gap: '0.5rem', alignItems: 'center' }}>
-              {sendFollowUp.isError && (
-                <span style={{ fontSize: '0.68rem', color: 'var(--error)', flex: 1 }}>Failed to send</span>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.375rem', gap: '0.375rem', alignItems: 'center' }}>
+              {(sendFollowUp.isError || followUpFileError) && (
+                <span style={{ fontSize: '0.68rem', color: 'var(--error)', flex: 1 }}>
+                  {followUpFileError || 'Failed to send'}
+                </span>
               )}
               {sendFollowUp.isSuccess && (
                 <span style={{ fontSize: '0.68rem', color: 'var(--success)', flex: 1 }}>Sent ✓</span>
               )}
+              {/* Paperclip */}
+              <button
+                type="button"
+                onClick={() => followUpFileInputRef.current?.click()}
+                title="Attach files"
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer', padding: '0.2rem',
+                  color: followUpFiles.length ? 'var(--accent)' : 'var(--text-secondary)',
+                  display: 'flex', opacity: 0.7,
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'; }}
+              >
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                </svg>
+              </button>
               <button
                 onClick={submitFollowUp}
                 disabled={!followUp.trim() || sendFollowUp.isPending}

@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useRef, type KeyboardEvent } from 'react';
+import { useState, useRef, type KeyboardEvent, type DragEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCreateTask } from '@/hooks/use-create-task';
 import { useAgentConfigStore } from '@/lib/agent-config-store';
 import { saveReport } from '@/lib/report-store';
+import { useFileAttachments, buildAttachmentBlock } from '@/hooks/use-file-attachments';
 
 const SWARM_SUGGESTIONS = [
   'Add input validation to all API endpoints',
@@ -30,22 +31,27 @@ export function SearchHome() {
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
   const [focused, setFocused] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const [tierKey, setTierKey] = useState<TierKey>('auto');
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { mutate: createTask, isPending } = useCreateTask();
   const swarmConfig = useAgentConfigStore(s => s.config);
+  const { files: attachedFiles, error: attachError, addFiles, removeFile, clearAll: clearFiles } = useFileAttachments();
 
   function handleSubmit(q: string) {
     const trimmed = q.trim();
     if (!trimmed) return;
     setError('');
+    const attachmentBlock = buildAttachmentBlock(attachedFiles);
+    const fullQuery = trimmed + attachmentBlock;
 
     const tierOption = TIER_OPTIONS.find(t => t.key === tierKey);
     const extraTier = tierOption?.value !== undefined ? { tier: tierOption.value } : {};
 
     createTask({
-      query: trimmed,
+      query: fullQuery,
       extraParams: {
         repo_path: swarmConfig.swarmRepoPat || '.',
         branch_prefix: swarmConfig.swarmBranchPrefix || 'swarm',
@@ -55,6 +61,7 @@ export function SearchHome() {
     }, {
       onSuccess: (task) => {
         saveReport({ taskId: task.id, query: trimmed, answer: '', createdAt: new Date().toISOString() });
+        clearFiles();
         router.push(`/task/${task.id}`);
       },
       onError: (err) =>
@@ -72,6 +79,17 @@ export function SearchHome() {
       e.preventDefault();
       handleSubmit(query);
     }
+  }
+
+  function onDragOver(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setIsDragging(true);
+  }
+  function onDragLeave() { setIsDragging(false); }
+  function onDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   }
 
   const canSubmit = !isPending && !!query.trim();
@@ -132,70 +150,143 @@ export function SearchHome() {
       </div>
 
       {/* Input */}
-      <div style={{ width: '100%', maxWidth: '680px' }}>
+      <div
+        style={{ width: '100%', maxWidth: '680px' }}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <form onSubmit={onFormSubmit}>
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={e => { if (e.target.files) { addFiles(e.target.files); e.target.value = ''; } }}
+          />
+
           <div style={{
             background: 'var(--surface)',
-            border: `1px solid ${focused ? ACCENT : error ? 'var(--error)' : 'var(--border)'}`,
-            borderRadius: '999px',
-            padding: '0 1rem',
+            border: `1px solid ${isDragging ? ACCENT : focused ? ACCENT : error ? 'var(--error)' : 'var(--border)'}`,
+            borderRadius: attachedFiles.length ? '14px' : '999px',
+            padding: attachedFiles.length ? '0.5rem 1rem' : '0 1rem',
             display: 'flex',
-            alignItems: 'center',
-            gap: '1rem',
-            height: '54px',
-            transition: 'border-color 0.15s ease',
+            flexDirection: attachedFiles.length ? 'column' : 'row',
+            alignItems: attachedFiles.length ? 'stretch' : 'center',
+            gap: '0.5rem',
+            minHeight: '54px',
+            transition: 'border-color 0.15s ease, border-radius 0.15s ease',
+            outline: isDragging ? `2px dashed ${ACCENT}` : 'none',
+            outlineOffset: '2px',
           }}>
-            <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)', opacity: 0.5 }}>
-              <IconWrench />
-            </span>
+            {/* File chips */}
+            {attachedFiles.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem', paddingTop: '0.25rem' }}>
+                {attachedFiles.map((f, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: '0.3rem',
+                    background: 'var(--surface-raised)', border: '1px solid var(--border)',
+                    borderRadius: '6px', padding: '0.2rem 0.5rem',
+                    fontSize: '0.72rem', color: 'var(--text-secondary)',
+                    maxWidth: '200px',
+                  }}>
+                    <IconFile />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                    <span style={{ opacity: 0.5, fontSize: '0.65rem', flexShrink: 0 }}>
+                      {f.size > 1000 ? `${(f.size / 1000).toFixed(0)}k` : `${f.size}b`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(i)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-secondary)', display: 'flex', lineHeight: 1 }}
+                    >✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
 
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={onKeyDown}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              placeholder="Describe what to build, fix, or refactor..."
-              disabled={isPending}
-              style={{
-                flex: 1,
-                background: 'transparent',
-                border: 'none',
-                outline: 'none',
-                fontSize: '0.9375rem',
-                color: 'var(--text-primary)',
-                fontFamily: 'inherit',
-                minWidth: 0,
-              }}
-            />
+            {/* Input row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1 }}>
+              <span style={{ flexShrink: 0, display: 'flex', color: 'var(--text-secondary)', opacity: 0.5 }}>
+                <IconWrench />
+              </span>
 
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              style={{
-                flexShrink: 0,
-                width: 34,
-                height: 34,
-                borderRadius: '50%',
-                background: canSubmit ? ACCENT : 'var(--surface-raised)',
-                border: 'none',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: canSubmit ? 'pointer' : 'not-allowed',
-                transition: 'background 0.15s ease',
-                color: canSubmit ? 'white' : 'var(--text-secondary)',
-              }}
-            >
-              {isPending ? <SpinnerIcon size={15} /> : <IconArrowUp />}
-            </button>
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={onKeyDown}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                placeholder={isDragging ? 'Drop files here…' : 'Describe what to build, fix, or refactor...'}
+                disabled={isPending}
+                style={{
+                  flex: 1,
+                  background: 'transparent',
+                  border: 'none',
+                  outline: 'none',
+                  fontSize: '0.9375rem',
+                  color: 'var(--text-primary)',
+                  fontFamily: 'inherit',
+                  minWidth: 0,
+                }}
+              />
+
+              {/* Paperclip */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isPending}
+                title="Attach files"
+                style={{
+                  flexShrink: 0,
+                  width: 30,
+                  height: 30,
+                  borderRadius: '50%',
+                  background: 'transparent',
+                  border: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  color: attachedFiles.length ? ACCENT : 'var(--text-secondary)',
+                  opacity: isPending ? 0.4 : 0.7,
+                  transition: 'color 0.12s ease',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = isPending ? '0.4' : '0.7'; }}
+              >
+                <IconPaperclip />
+              </button>
+
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                style={{
+                  flexShrink: 0,
+                  width: 34,
+                  height: 34,
+                  borderRadius: '50%',
+                  background: canSubmit ? ACCENT : 'var(--surface-raised)',
+                  border: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: canSubmit ? 'pointer' : 'not-allowed',
+                  transition: 'background 0.15s ease',
+                  color: canSubmit ? 'white' : 'var(--text-secondary)',
+                }}
+              >
+                {isPending ? <SpinnerIcon size={15} /> : <IconArrowUp />}
+              </button>
+            </div>
           </div>
-          
-          {error && (
+
+          {(error || attachError) && (
             <p style={{ color: 'var(--error)', fontSize: '0.8125rem', marginTop: '0.375rem', paddingLeft: '1.25rem' }}>
-              {error}
+              {error || attachError}
             </p>
           )}
         </form>
@@ -263,6 +354,22 @@ export function SearchHome() {
         </div>
       </div>
     </div>
+  );
+}
+
+function IconPaperclip() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+    </svg>
+  );
+}
+
+function IconFile() {
+  return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+    </svg>
   );
 }
 
