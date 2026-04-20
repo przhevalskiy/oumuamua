@@ -17,10 +17,20 @@ const SWARM_SUGGESTIONS = [
   'Migrate from REST to GraphQL',
 ];
 
+type TierKey = 'auto' | 'lightweight' | 'standard' | 'full';
+
+const TIER_OPTIONS: { key: TierKey; label: string; value: number | undefined; desc: string }[] = [
+  { key: 'auto',        label: 'Auto',        value: undefined, desc: 'Auto-detect from goal' },
+  { key: 'lightweight', label: 'Lightweight',  value: 1,         desc: '1 track · 1 heal · no security' },
+  { key: 'standard',    label: 'Standard',     value: 2,         desc: '2 tracks · 2 heals · full scan' },
+  { key: 'full',        label: 'Full Crew',    value: 3,         desc: '4 tracks · max heals · enterprise' },
+];
+
 export function SearchHome() {
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
   const [focused, setFocused] = useState(false);
+  const [tierKey, setTierKey] = useState<TierKey>('auto');
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const { mutate: createTask, isPending } = useCreateTask();
@@ -31,12 +41,16 @@ export function SearchHome() {
     if (!trimmed) return;
     setError('');
 
+    const tierOption = TIER_OPTIONS.find(t => t.key === tierKey);
+    const extraTier = tierOption?.value !== undefined ? { tier: tierOption.value } : {};
+
     createTask({
       query: trimmed,
       extraParams: {
         repo_path: swarmConfig.swarmRepoPat || '.',
         branch_prefix: swarmConfig.swarmBranchPrefix || 'swarm',
         max_heal_cycles: swarmConfig.swarmMaxHealCycles,
+        ...extraTier,
       },
     }, {
       onSuccess: (task) => {
@@ -186,8 +200,38 @@ export function SearchHome() {
           )}
         </form>
 
+        {/* Tier selector */}
+        <div style={{ marginTop: '1rem', display: 'flex', gap: '0.375rem', justifyContent: 'center', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginRight: '0.25rem' }}>Crew size:</span>
+          {TIER_OPTIONS.map(opt => {
+            const active = tierKey === opt.key;
+            return (
+              <button
+                key={opt.key}
+                onClick={() => setTierKey(opt.key)}
+                disabled={isPending}
+                title={opt.desc}
+                style={{
+                  background: active ? ACCENT : 'transparent',
+                  border: `1px solid ${active ? ACCENT : 'var(--border)'}`,
+                  borderRadius: '999px',
+                  padding: '0.25rem 0.75rem',
+                  color: active ? 'white' : 'var(--text-secondary)',
+                  fontSize: '0.75rem',
+                  fontWeight: active ? 600 : 400,
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  transition: 'all 0.12s ease',
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Suggestions */}
-        <div style={{ marginTop: '1.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'center' }}>
+        <div style={{ marginTop: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'center' }}>
           {SWARM_SUGGESTIONS.map(s => (
             <button
               key={s}
