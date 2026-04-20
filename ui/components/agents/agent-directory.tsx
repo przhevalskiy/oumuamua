@@ -2,7 +2,7 @@
 
 import { AgentCard, type AgentDef } from './agent-card';
 
-const AGENTS: AgentDef[] = [
+const RESEARCH_AGENTS: AgentDef[] = [
   {
     step: 1,
     role: 'Strategist',
@@ -70,15 +70,79 @@ const AGENTS: AgentDef[] = [
     step: 5,
     role: 'Executor',
     tagline: 'Carries out the TaskPlan step by step. No reasoning — pure deterministic dispatch to browser and HTTP activities.',
-    why: 'Separating planning from execution means actions are fast, auditable, and don\'t consume reasoning tokens.',
-    tools: ['fill_input', 'submit_form', 'http_request', 'navigate', 'click_element', 'get_page_structure'],
+    why: "Separating planning from execution means actions are fast, auditable, and don't consume reasoning tokens.",
+    tools: ['fill_input', 'submit_form', 'http_request', 'navigate', 'click_element'],
     mode: 'execution',
     color: '#16a34a',
   },
 ];
 
+const SWARM_AGENTS: AgentDef[] = [
+  {
+    step: 1,
+    role: 'Foreman',
+    tagline: 'Orchestrates the full swarm: dispatches agents in sequence, manages the heal loop, and blocks the PR if security fails.',
+    why: 'The single source of truth for task state. If the IDE closes mid-run, Temporal rehydrates the Foreman and it continues.',
+    tools: ['OrchestratorSkill'],
+    mode: 'swarm',
+    color: '#6366f1',
+    spriteRole: 'foreman',
+  },
+  {
+    step: 2,
+    role: 'Architect',
+    tagline: 'Reads the local repo, maps dependencies and entry points, and produces a structured implementation plan for the Builder.',
+    why: 'The Builder should never guess at structure. The Architect reads first so the Builder writes with full context.',
+    tools: ['list_directory', 'read_file', 'report_plan'],
+    mode: 'swarm',
+    color: '#0ea5e9',
+    spriteRole: 'architect',
+  },
+  {
+    step: 3,
+    role: 'Builder',
+    tagline: 'Executes the Architect\'s plan step by step — creating, patching, and deleting files. Re-invoked with heal instructions if QA fails.',
+    why: 'Code writing is isolated from planning and testing. Each cycle is a clean, auditable set of file edits.',
+    tools: ['read_file', 'write_file', 'patch_file', 'delete_file', 'run_command'],
+    mode: 'swarm',
+    color: '#8b5cf6',
+    spriteRole: 'builder',
+  },
+  {
+    step: 4,
+    role: 'Inspector',
+    tagline: 'Runs tests, lint, and type checks. If anything fails, produces concrete heal_instructions fed back to the Builder.',
+    why: 'The self-healing loop. Up to N cycles of Builder → Inspector until checks pass or the limit is hit.',
+    tools: ['run_tests', 'run_lint', 'run_type_check', 'read_file'],
+    mode: 'swarm',
+    color: '#f59e0b',
+    spriteRole: 'inspector',
+  },
+  {
+    step: 5,
+    role: 'Security',
+    tagline: 'Scans for committed secrets, vulnerable dependencies, and insecure patterns. Blocks the PR if critical or high findings exist.',
+    why: 'A hard gate before any code reaches a PR. No critical finding goes unreviewed.',
+    tools: ['scan_secrets', 'scan_dependencies', 'run_sast', 'read_file'],
+    mode: 'swarm',
+    color: '#ef4444',
+    spriteRole: 'security',
+  },
+  {
+    step: 6,
+    role: 'DevOps',
+    tagline: 'Creates the branch, stages all changes, commits with a conventional message, pushes, and opens a pull request.',
+    why: 'Git operations are deterministic and isolated. The swarm never touches main directly.',
+    tools: ['git_status', 'git_create_branch', 'git_add', 'git_commit', 'git_push', 'create_pull_request'],
+    mode: 'swarm',
+    color: '#16a34a',
+    spriteRole: 'devops',
+  },
+];
+
 const PIPELINE_RESEARCH = ['Strategist', 'Scout', 'Analysts ×N', 'Critic', 'Verifiers', 'Synthesizer'];
 const PIPELINE_EXECUTION = ['Strategist', 'Scout', 'Analyst', 'TaskPlanner', 'Executor', 'Verifier'];
+const PIPELINE_SWARM = ['Foreman', 'Architect', 'Builder', 'Inspector ↺', 'Security', 'DevOps'];
 
 function PipelineRow({ steps, color, label }: { steps: string[]; color: string; label: string }) {
   return (
@@ -112,9 +176,6 @@ function PipelineRow({ steps, color, label }: { steps: string[]; color: string; 
 }
 
 export function AgentDirectory() {
-  const research = AGENTS.filter(a => a.mode === 'research' || a.mode === 'both');
-  const execution = AGENTS.filter(a => a.mode === 'execution' || a.mode === 'both');
-
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '2.5rem 2rem' }}>
 
@@ -142,6 +203,8 @@ export function AgentDirectory() {
         <PipelineRow steps={PIPELINE_RESEARCH} color="#6366f1" label="Research pipeline" />
         <div style={{ height: 1, background: 'var(--border)' }} />
         <PipelineRow steps={PIPELINE_EXECUTION} color="#16a34a" label="Execution pipeline" />
+        <div style={{ height: 1, background: 'var(--border)' }} />
+        <PipelineRow steps={PIPELINE_SWARM} color="#f97316" label="Swarm factory (durable)" />
       </div>
 
       {/* Research agents */}
@@ -150,17 +213,49 @@ export function AgentDirectory() {
           Research Pipeline
         </h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.875rem' }}>
-          {research.map(a => <AgentCard key={a.role} agent={a} />)}
+          {RESEARCH_AGENTS.filter(a => a.mode === 'research' || a.mode === 'both').map(a => (
+            <AgentCard key={a.role} agent={a} />
+          ))}
         </div>
       </div>
 
       {/* Execution agents */}
-      <div>
+      <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: '0.8125rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-secondary)', marginBottom: '0.875rem' }}>
           Execution Pipeline
         </h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.875rem' }}>
-          {execution.map(a => <AgentCard key={a.role} agent={a} />)}
+          {RESEARCH_AGENTS.filter(a => a.mode === 'execution' || a.mode === 'both').map(a => (
+            <AgentCard key={a.role} agent={a} />
+          ))}
+        </div>
+      </div>
+
+      {/* Swarm agents */}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '0.875rem' }}>
+          <h2 style={{ fontSize: '0.8125rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-secondary)' }}>
+            Swarm Factory
+          </h2>
+          <span style={{
+            fontSize: '0.65rem',
+            fontWeight: 600,
+            color: '#f97316',
+            background: '#f9731615',
+            padding: '0.15rem 0.5rem',
+            borderRadius: '999px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+          }}>
+            Durable · Temporal-backed
+          </span>
+        </div>
+        <p style={{ fontSize: '0.825rem', color: 'var(--text-secondary)', marginBottom: '1rem', lineHeight: 1.5 }}>
+          Unlike research and execution agents, swarm agents survive failures. If the IDE closes mid-run,
+          Temporal rehydrates the Foreman and the swarm continues from the last checkpoint.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.875rem' }}>
+          {SWARM_AGENTS.map(a => <AgentCard key={a.role} agent={a} />)}
         </div>
       </div>
 

@@ -1,11 +1,19 @@
 'use client';
 
-import { useAgentConfigStore, DEFAULT_CONFIG, type AgentModel } from '@/lib/agent-config-store';
+import { useAgentConfigStore, DEFAULT_CONFIG, type AgentModel, type AgentConfig } from '@/lib/agent-config-store';
 
 const MODEL_OPTIONS: { value: AgentModel; label: string }[] = [
-  { value: 'default', label: 'Default (Sonnet 4.6)' },
+  { value: 'default',          label: 'Default (Sonnet 4.6)' },
   { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
   { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (cheaper)' },
+];
+
+const SWARM_AGENTS: { key: keyof AgentConfig; label: string; hint: string }[] = [
+  { key: 'modelArchitect', label: 'Architect', hint: 'Maps repo, plans tracks — keep Sonnet' },
+  { key: 'modelBuilder',   label: 'Builder',   hint: 'Writes code — Sonnet recommended' },
+  { key: 'modelInspector', label: 'Inspector', hint: 'Runs QA, generates heal instructions' },
+  { key: 'modelSecurity',  label: 'Security',  hint: 'Scans for secrets and CVEs' },
+  { key: 'modelDevOps',    label: 'DevOps',    hint: 'Git, branch, PR — Haiku is fine' },
 ];
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -60,32 +68,44 @@ function SliderInput({ value, min, max, onChange }: { value: number; min: number
   );
 }
 
+function TextInput({ value, placeholder, onChange }: { value: string; placeholder?: string; onChange: (v: string) => void }) {
+  return (
+    <input
+      type="text"
+      value={value}
+      placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+      style={{
+        fontSize: '0.8125rem',
+        color: 'var(--text-primary)',
+        background: 'var(--surface-raised)',
+        border: '1px solid var(--border)',
+        borderRadius: '6px',
+        padding: '0.3rem 0.6rem',
+        fontFamily: 'monospace',
+        width: 220,
+        outline: 'none',
+      }}
+    />
+  );
+}
+
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
       onClick={() => onChange(!checked)}
       style={{
-        width: 40,
-        height: 22,
-        borderRadius: 999,
+        width: 40, height: 22, borderRadius: 999,
         background: checked ? 'var(--accent)' : 'var(--surface-raised)',
         border: '1px solid ' + (checked ? 'var(--accent)' : 'var(--border)'),
-        cursor: 'pointer',
-        position: 'relative',
-        transition: 'background 0.15s, border 0.15s',
-        padding: 0,
+        cursor: 'pointer', position: 'relative',
+        transition: 'background 0.15s, border 0.15s', padding: 0,
       }}
     >
       <span style={{
-        position: 'absolute',
-        top: 2,
-        left: checked ? 20 : 2,
-        width: 16,
-        height: 16,
-        borderRadius: '50%',
-        background: '#fff',
-        transition: 'left 0.15s',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+        position: 'absolute', top: 2, left: checked ? 20 : 2,
+        width: 16, height: 16, borderRadius: '50%', background: '#fff',
+        transition: 'left 0.15s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
       }} />
     </button>
   );
@@ -125,21 +145,17 @@ export function ConfigPanel() {
             Configuration
           </h1>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-            Tune agent behavior without touching code.
+            Tune the swarm without touching code.
           </p>
         </div>
         {dirty && (
           <button
             onClick={resetConfig}
             style={{
-              fontSize: '0.8125rem',
-              color: 'var(--text-secondary)',
-              background: 'transparent',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              padding: '0.375rem 0.75rem',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
+              fontSize: '0.8125rem', color: 'var(--text-secondary)',
+              background: 'transparent', border: '1px solid var(--border)',
+              borderRadius: '8px', padding: '0.375rem 0.75rem',
+              cursor: 'pointer', fontFamily: 'inherit',
             }}
           >
             Reset to defaults
@@ -147,61 +163,53 @@ export function ConfigPanel() {
         )}
       </div>
 
-      {/* Research pipeline */}
+      {/* Swarm Factory */}
       <div style={{ marginBottom: '2rem' }}>
-        <SectionLabel>Research Pipeline</SectionLabel>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.875rem' }}>
+          <SectionLabel>Swarm Factory</SectionLabel>
+          <span style={{
+            fontSize: '0.6rem', fontWeight: 600, color: '#f97316',
+            background: '#f9731615', padding: '0.1rem 0.4rem',
+            borderRadius: '999px', textTransform: 'uppercase',
+            letterSpacing: '0.06em', marginBottom: '0.875rem',
+          }}>
+            Durable
+          </span>
+        </div>
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '10px', padding: '0 1rem' }}>
-          <SettingRow label="Max analysts per task" hint="How many Analyst agents read sources in parallel">
-            <SliderInput value={config.maxAnalysts} min={2} max={8} onChange={v => setConfig({ maxAnalysts: v })} />
-          </SettingRow>
-          <SettingRow label="Max verifiers per task" hint="Verifiers only spawn for claims the Critic flags">
-            <SliderInput value={config.maxVerifiers} min={1} max={5} onChange={v => setConfig({ maxVerifiers: v })} />
-          </SettingRow>
-          <SettingRow label="Analyst depth" hint="Shallow: 3 pages · Deep: 8 pages per analyst">
-            <Select
-              value={config.analystDepth}
-              options={[{ value: 'shallow', label: 'Shallow (faster)' }, { value: 'deep', label: 'Deep (thorough)' }]}
-              onChange={v => setConfig({ analystDepth: v as 'shallow' | 'deep' })}
+          <SettingRow label="Repo path" hint="Absolute path to the repo the swarm will build in">
+            <TextInput
+              value={config.swarmRepoPat}
+              placeholder="/path/to/your/repo"
+              onChange={v => setConfig({ swarmRepoPat: v })}
             />
           </SettingRow>
-        </div>
-      </div>
-
-      {/* Execution pipeline */}
-      <div style={{ marginBottom: '2rem' }}>
-        <SectionLabel>Execution Pipeline</SectionLabel>
-        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '10px', padding: '0 1rem' }}>
-          <SettingRow label="Require approval for irreversible steps" hint="Gate destructive actions (form submissions, API writes)">
-            <Toggle checked={config.requireApprovalForIrreversible} onChange={v => setConfig({ requireApprovalForIrreversible: v })} />
+          <SettingRow label="Branch prefix" hint="Git branches will be named prefix/task-id">
+            <TextInput
+              value={config.swarmBranchPrefix}
+              placeholder="swarm"
+              onChange={v => setConfig({ swarmBranchPrefix: v })}
+            />
           </SettingRow>
-          <SettingRow label="Max execution steps" hint="Guards against runaway task plans">
-            <SliderInput value={config.maxExecutionSteps} min={1} max={20} onChange={v => setConfig({ maxExecutionSteps: v })} />
+          <SettingRow label="Max parallel tracks" hint="How many Builder agents run simultaneously">
+            <SliderInput value={config.swarmMaxParallelTracks} min={1} max={6} onChange={v => setConfig({ swarmMaxParallelTracks: v })} />
           </SettingRow>
-          <SettingRow label="HTTP timeout (seconds)" hint="Per http_request activity call">
-            <SliderInput value={config.httpTimeoutSeconds} min={10} max={120} onChange={v => setConfig({ httpTimeoutSeconds: v })} />
+          <SettingRow label="Max heal cycles" hint="How many times the Inspector can send the Builder back to fix failures">
+            <SliderInput value={config.swarmMaxHealCycles} min={1} max={5} onChange={v => setConfig({ swarmMaxHealCycles: v })} />
           </SettingRow>
         </div>
       </div>
 
-      {/* Model selection */}
+      {/* Model per agent */}
       <div style={{ marginBottom: '2rem' }}>
-        <SectionLabel>Model per Role</SectionLabel>
+        <SectionLabel>Model per Agent</SectionLabel>
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '10px', padding: '0 1rem' }}>
-          {(
-            [
-              { key: 'modelStrategist', label: 'Strategist', hint: 'Planning — benefits from Sonnet' },
-              { key: 'modelCritic', label: 'Critic', hint: 'Contradiction detection — keep Sonnet' },
-              { key: 'modelTaskPlanner', label: 'TaskPlanner', hint: 'JSON plan generation — keep Sonnet' },
-              { key: 'modelAnalyst', label: 'Analyst', hint: 'Claim extraction — Haiku is viable' },
-              { key: 'modelScout', label: 'Scout', hint: 'Query planning — Haiku is fine' },
-              { key: 'modelVerifier', label: 'Verifier', hint: 'Fact checking — Haiku is viable' },
-            ] as { key: keyof typeof config; label: string; hint: string }[]
-          ).map(({ key, label, hint }) => (
-            <SettingRow key={key} label={label} hint={hint}>
+          {SWARM_AGENTS.map(({ key, label, hint }) => (
+            <SettingRow key={String(key)} label={label} hint={hint}>
               <Select
                 value={config[key] as string}
                 options={MODEL_OPTIONS}
-                onChange={v => setConfig({ [key]: v as AgentModel })}
+                onChange={v => setConfig({ [key]: v as AgentModel } as Partial<AgentConfig>)}
               />
             </SettingRow>
           ))}
@@ -212,11 +220,8 @@ export function ConfigPanel() {
       <div>
         <SectionLabel>Display</SectionLabel>
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '10px', padding: '0 1rem' }}>
-          <SettingRow label="Show agent tags in message feed" hint="Shows [Scout], [Agent N], [Executor N] prefixes">
+          <SettingRow label="Show agent tags in feed" hint="Shows [Architect], [Builder (frontend)], [Inspector] etc. in the activity log">
             <Toggle checked={config.showAgentTagsInFeed} onChange={v => setConfig({ showAgentTagsInFeed: v })} />
-          </SettingRow>
-          <SettingRow label="Show raw claims before synthesis" hint="Stream individual claims as analysts extract them">
-            <Toggle checked={config.showRawClaimsBeforeSynthesis} onChange={v => setConfig({ showRawClaimsBeforeSynthesis: v })} />
           </SettingRow>
         </div>
       </div>

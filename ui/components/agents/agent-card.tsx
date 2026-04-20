@@ -1,6 +1,8 @@
 'use client';
 
-type Mode = 'research' | 'execution' | 'both';
+import { ChibiAvatar, type SwarmRole } from '@/components/chibi-avatar';
+
+type Mode = 'research' | 'execution' | 'both' | 'swarm';
 
 export type AgentDef = {
   role: string;
@@ -10,18 +12,21 @@ export type AgentDef = {
   mode: Mode;
   step: number;
   color: string;
+  spriteRole?: SwarmRole;
 };
 
 const MODE_LABEL: Record<Mode, string> = {
   research: 'Research',
   execution: 'Execution',
   both: 'Both',
+  swarm: 'Swarm',
 };
 
 const MODE_COLOR: Record<Mode, string> = {
   research: '#6366f1',
   execution: '#16a34a',
   both: '#d97706',
+  swarm: '#f97316',
 };
 
 export function AgentCard({ agent }: { agent: AgentDef }) {
@@ -42,23 +47,27 @@ export function AgentCard({ agent }: { agent: AgentDef }) {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
-          <span style={{
-            width: 28,
-            height: 28,
-            borderRadius: '50%',
-            background: agent.color + '22',
-            border: `1.5px solid ${agent.color}44`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '0.65rem',
-            fontWeight: 700,
-            color: agent.color,
-            flexShrink: 0,
-            letterSpacing: '-0.01em',
-          }}>
-            {agent.step}
-          </span>
+          {agent.spriteRole ? (
+            <ChibiAvatar role={agent.spriteRole} size={32} />
+          ) : (
+            <span style={{
+              width: 28,
+              height: 28,
+              borderRadius: '50%',
+              background: agent.color + '22',
+              border: `1.5px solid ${agent.color}44`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.65rem',
+              fontWeight: 700,
+              color: agent.color,
+              flexShrink: 0,
+              letterSpacing: '-0.01em',
+            }}>
+              {agent.step}
+            </span>
+          )}
           <span style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--text-primary)' }}>
             {agent.role}
           </span>
