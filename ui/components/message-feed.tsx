@@ -34,7 +34,7 @@ const TOOL_LABELS: Record<string, string> = {
 
 // ── Agent tag parser ──────────────────────────────────────────────────────────
 // Handles: [Builder], [Builder 1], [Builder (track-name)], [Foreman], etc.
-const TAGGED_RE = /^\[(Foreman|Architect|Builder|Inspector|Security|DevOps|Scout|Agent|Analyst|Verifier|Critic)(?:\s+(\d+)|\s+\(([^)]+)\))?\]\s*/;
+const TAGGED_RE = /^\[(PM|Foreman|Architect|Builder|Inspector|Security|DevOps|Scout|Agent|Analyst|Verifier|Critic)(?:\s+(\d+)|\s+\(([^)]+)\))?\]\s*/;
 
 type AgentType = SwarmRole;
 
@@ -69,7 +69,7 @@ export type { AgentType };
 
 // ── Role display names ────────────────────────────────────────────────────────
 const ROLE_LABEL: Record<string, string> = {
-  foreman: 'Foreman', architect: 'Architect', builder: 'Builder',
+  pm: 'PM', foreman: 'Foreman', architect: 'Architect', builder: 'Builder',
   inspector: 'Inspector', security: 'Security', devops: 'DevOps',
   scout: 'Scout', analyst: 'Analyst', verifier: 'Verifier', critic: 'Critic',
 };
@@ -554,6 +554,179 @@ function ApprovalCard({
   );
 }
 
+// ── Clarification card (PM questions) ────────────────────────────────────────
+
+const CLARIFICATION_REQUEST_PREFIX = '__clarification_request__';
+const CLARIFICATION_RESOLVED_PREFIX = '__clarification_resolved__';
+
+type ClarificationPayload = {
+  questions: string[];
+  context?: string;
+  workflow_id: string;
+};
+
+function parseClarificationRequest(text: string): ClarificationPayload | null {
+  if (!text.startsWith(CLARIFICATION_REQUEST_PREFIX)) return null;
+  try {
+    return JSON.parse(text.slice(CLARIFICATION_REQUEST_PREFIX.length)) as ClarificationPayload;
+  } catch { return null; }
+}
+
+function ClarificationCard({
+  payload,
+  taskId,
+  autoApprove,
+}: {
+  payload: ClarificationPayload;
+  taskId: string;
+  autoApprove: boolean;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const ACCENT = '#f97316';
+
+  const sendAnswers = useCallback(async (skip = false) => {
+    if (submitted || loading) return;
+    setLoading(true);
+    try {
+      const answerPayload = skip
+        ? {}
+        : Object.fromEntries(payload.questions.map(q => [q, answers[q] ?? '']));
+      await fetch(`/api/tasks/${taskId}/signal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflow_id: payload.workflow_id,
+          signal: 'submit',
+          payload: answerPayload,
+        }),
+      });
+      setSubmitted(true);
+    } catch {
+      // leave open so user can retry
+    } finally {
+      setLoading(false);
+    }
+  }, [submitted, loading, taskId, payload, answers]);
+
+  // Auto-approve skips clarification immediately
+  useEffect(() => {
+    if (autoApprove && !submitted && !loading) {
+      sendAnswers(true);
+    }
+  }, [autoApprove, submitted, loading, sendAnswers]);
+
+  return (
+    <div style={{
+      margin: '0.75rem 0',
+      border: `1px solid ${submitted ? 'var(--border)' : ACCENT}`,
+      borderRadius: '12px',
+      overflow: 'hidden',
+      background: 'var(--surface)',
+      opacity: submitted ? 0.75 : 1,
+      transition: 'opacity 0.2s',
+    }}>
+      {/* Header */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '0.5rem',
+        padding: '0.625rem 0.875rem',
+        background: submitted ? 'transparent' : `${ACCENT}12`,
+        borderBottom: `1px solid ${submitted ? 'var(--border)' : `${ACCENT}30`}`,
+      }}>
+        <span style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: submitted ? 'var(--text-secondary)' : ACCENT }}>
+          Project Manager · Clarification
+        </span>
+        {submitted && (
+          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: '#22c55e', fontWeight: 600 }}>
+            ✓ Submitted
+          </span>
+        )}
+      </div>
+
+      <div style={{ padding: '0.75rem 0.875rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        {/* Context summary */}
+        {payload.context && (
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0, fontStyle: 'italic', opacity: 0.8 }}>
+            {payload.context}
+          </p>
+        )}
+
+        {/* Questions */}
+        {payload.questions.map((q, i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-primary)', lineHeight: 1.4, margin: 0, fontWeight: 500 }}>
+              {i + 1}. {q}
+            </p>
+            {!submitted && (
+              <input
+                type="text"
+                placeholder="Your answer…"
+                value={answers[q] ?? ''}
+                onChange={e => setAnswers(prev => ({ ...prev, [q]: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter') sendAnswers(false); }}
+                style={{
+                  width: '100%', padding: '0.45rem 0.625rem',
+                  background: 'var(--surface-raised)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '7px',
+                  color: 'var(--text-primary)',
+                  fontSize: '0.8125rem',
+                  fontFamily: 'inherit',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+            )}
+            {submitted && answers[q] && (
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0, paddingLeft: '0.75rem', borderLeft: `2px solid ${ACCENT}40` }}>
+                {answers[q]}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Buttons */}
+      {!submitted && (
+        <div style={{ display: 'flex', gap: '0.5rem', padding: '0 0.875rem 0.75rem' }}>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={() => sendAnswers(false)}
+            style={{
+              flex: 2, padding: '0.45rem 0', borderRadius: '8px',
+              background: ACCENT, border: 'none', color: 'white',
+              fontSize: '0.8125rem', fontWeight: 600,
+              cursor: loading ? 'wait' : 'pointer',
+              fontFamily: 'inherit', opacity: loading ? 0.6 : 1,
+              transition: 'opacity 0.12s',
+            }}
+          >
+            {loading ? '…' : 'Submit answers'}
+          </button>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={() => sendAnswers(true)}
+            style={{
+              flex: 1, padding: '0.45rem 0', borderRadius: '8px',
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              color: 'var(--text-secondary)',
+              fontSize: '0.8125rem', fontWeight: 400,
+              cursor: loading ? 'wait' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            Skip
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TextBubble({ text }: { text: string }) {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -583,10 +756,15 @@ function MessageRow({ message, taskId, autoApprove }: { message: TaskMessage; ta
     const text = typeof c.content === 'string' ? c.content : '';
     if (!text.trim()) return null;
 
-    // HITL approval messages
+    // HITL: approval checkpoints
     const approvalPayload = parseApprovalRequest(text);
     if (approvalPayload) return <ApprovalCard payload={approvalPayload} taskId={taskId} autoApprove={autoApprove} />;
-    if (parseApprovalResolved(text)) return null; // resolved marker — card handles its own state
+    if (parseApprovalResolved(text)) return null;
+
+    // HITL: PM clarification questions
+    const clarifyPayload = parseClarificationRequest(text);
+    if (clarifyPayload) return <ClarificationCard payload={clarifyPayload} taskId={taskId} autoApprove={autoApprove} />;
+    if (text.startsWith(CLARIFICATION_RESOLVED_PREFIX)) return null;
 
     if (text.startsWith('## Swarm Factory Report')) return null;
     if (STRATEGY_RE.test(text)) return <StrategyCard text={text} />;
