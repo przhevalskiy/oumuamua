@@ -177,13 +177,6 @@ export function ConfigPanel() {
           </span>
         </div>
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '10px', padding: '0 1rem' }}>
-          <SettingRow label="Repo path" hint="Absolute path to the repo the swarm will build in">
-            <TextInput
-              value={config.swarmRepoPat}
-              placeholder="/path/to/your/repo"
-              onChange={v => setConfig({ swarmRepoPat: v })}
-            />
-          </SettingRow>
           <SettingRow label="Branch prefix" hint="Git branches will be named prefix/task-id">
             <TextInput
               value={config.swarmBranchPrefix}

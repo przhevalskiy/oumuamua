@@ -4,7 +4,6 @@ import { persist } from 'zustand/middleware';
 export type AgentModel = 'claude-sonnet-4-6' | 'claude-haiku-4-5' | 'default';
 
 export type AgentConfig = {
-  swarmRepoPat: string;
   swarmBranchPrefix: string;
   swarmMaxHealCycles: number;
   swarmMaxParallelTracks: number;
@@ -17,7 +16,6 @@ export type AgentConfig = {
 };
 
 export const DEFAULT_CONFIG: AgentConfig = {
-  swarmRepoPat: '.',
   swarmBranchPrefix: 'swarm',
   swarmMaxHealCycles: 3,
   swarmMaxParallelTracks: 4,

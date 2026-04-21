@@ -3,6 +3,8 @@ export type SavedReport = {
   query: string;
   answer: string;
   createdAt: string; // ISO
+  projectId?: string;
+  summary?: string; // final swarm report summary, saved on completion
 };
 
 const KEY = 'keystone_reports';
@@ -23,10 +25,9 @@ function save(reports: SavedReport[]) {
 
 export function saveReport(report: SavedReport) {
   const reports = load();
-  // Dedupe by taskId — update if exists, prepend if new
   const existing = reports.findIndex(r => r.taskId === report.taskId);
   if (existing !== -1) {
-    reports[existing] = report;
+    reports[existing] = { ...reports[existing], ...report };
     save(reports);
   } else {
     save([report, ...reports]);
@@ -39,6 +40,10 @@ export function getReport(taskId: string): SavedReport | null {
 
 export function getAllReports(): SavedReport[] {
   return load();
+}
+
+export function getReportsByProject(projectId: string): SavedReport[] {
+  return load().filter(r => r.projectId === projectId);
 }
 
 export function deleteReport(taskId: string) {
