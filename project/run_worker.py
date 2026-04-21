@@ -13,12 +13,13 @@ from agentex.lib.utils.logging import make_logger
 from agentex.lib.environment_variables import EnvironmentVariables
 
 from workflows.swarm_orchestrator import SwarmOrchestrator
+from workflows.pm_agent import PMAgent
 from workflows.architect_agent import ArchitectAgent
 from workflows.builder_agent import BuilderAgent
 from workflows.inspector_agent import InspectorAgent
 from workflows.security_agent import SecurityAgent
 from workflows.devops_agent import DevOpsAgent
-from project.child_workflow import ApprovalWorkflow
+from project.child_workflow import ApprovalWorkflow, ClarificationWorkflow
 
 from activities.swarm_activities import (
     swarm_list_directory,
@@ -50,6 +51,7 @@ from activities.swarm_activities import (
     swarm_memory_write,
     swarm_memory_read,
 )
+from activities.pm_planner_activity import plan_pm_step
 from activities.architect_planner_activity import plan_architect_step
 from activities.builder_planner_activity import plan_builder_step
 from activities.inspector_planner_activity import plan_inspector_step
@@ -92,6 +94,7 @@ async def main():
         swarm_deploy,
         swarm_memory_write,
         swarm_memory_read,
+        plan_pm_step,
         plan_architect_step,
         plan_builder_step,
         plan_inspector_step,
@@ -112,6 +115,8 @@ async def main():
         activities=all_activities,
         workflows=[
             SwarmOrchestrator,
+            PMAgent,
+            ClarificationWorkflow,
             ArchitectAgent,
             BuilderAgent,
             InspectorAgent,

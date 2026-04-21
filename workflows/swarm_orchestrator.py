@@ -35,7 +35,8 @@ from agentex.types.text_content import TextContent
 with workflow.unsafe.imports_passed_through():
     from project.planner import _extract_task_prompt
     from project.complexity import classify_tier, params_for_tier, TIER_LABELS
-    from project.child_workflow import ApprovalWorkflow
+    from project.child_workflow import ApprovalWorkflow, ClarificationWorkflow
+    from workflows.pm_agent import PMAgent
     from workflows.architect_agent import ArchitectAgent
     from workflows.builder_agent import BuilderAgent
     from workflows.inspector_agent import InspectorAgent
@@ -45,6 +46,7 @@ with workflow.unsafe.imports_passed_through():
 environment_variables = EnvironmentVariables.refresh()
 logger = structlog.get_logger(__name__)
 
+PM_TIMEOUT        = timedelta(hours=50)   # 48 h clarification window + buffer
 ARCHITECT_TIMEOUT = timedelta(minutes=10)
 BUILDER_TIMEOUT   = timedelta(minutes=30)
 INSPECTOR_TIMEOUT = timedelta(minutes=15)
@@ -296,6 +298,24 @@ class SwarmOrchestrator(BaseWorkflow):
                 ),
             ),
         )
+
+        # ── Step 0: PM Agent (tier >= 1 — skip on Auto) ──────────────────────
+        if tier >= 1:
+            pm_json: str = await workflow.execute_child_workflow(
+                PMAgent.run,
+                args=[goal, repo_path, task_id, task_queue, tier],
+                id=f"{task_id}-r{iteration}-pm",
+                task_queue=task_queue,
+                execution_timeout=PM_TIMEOUT,
+            )
+            try:
+                pm_result = json.loads(pm_json)
+                enriched = pm_result.get("enriched_goal", "").strip()
+                if enriched and enriched != goal:
+                    goal = enriched
+                    log.info("pm_enriched_goal", length=len(goal))
+            except (json.JSONDecodeError, ValueError):
+                pass  # use original goal if PM fails
 
         # ── Step 1: Architect ─────────────────────────────────────────────────
         await adk.messages.create(
