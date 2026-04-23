@@ -1,8 +1,63 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, createContext, useContext } from 'react';
 import type { TaskMessage } from 'agentex/resources';
-import { ChibiAvatar, ROLE_TO_SPRITE, type SwarmRole } from './chibi-avatar';
+import { ChibiAvatar, ROLE_TO_SPRITE, BUILDER_RING_COLORS, type SwarmRole } from './chibi-avatar';
+
+// ── Builder progress tracking ─────────────────────────────────────────────────
+
+interface BuilderProg { total: number; done: number; finished: boolean }
+type BuilderProgMap = Map<string, BuilderProg>;
+
+const BuilderProgressCtx = createContext<BuilderProgMap>(new Map());
+
+const PROGRESS_TOOLS = new Set(['write_file', 'patch_file', 'run_command', 'delete_file', 'finish_build']);
+// Builder tag regex — matches [Builder 1], [Builder (track-name)], [Builder]
+const BUILDER_TAG_RE = /^\[Builder(?:\s+(\d+)|\s+\(([^)]+)\))?\]\s*/i;
+
+function computeBuilderProgress(messages: TaskMessage[]): BuilderProgMap {
+  const map = new Map<string, BuilderProg>();
+
+  for (const msg of messages) {
+    const c = msg.content as { type?: string; content?: unknown } | null | undefined;
+    const text = (c?.type === 'text' || !c?.type) && typeof c?.content === 'string' ? c.content : '';
+    if (!text) continue;
+
+    const tagMatch = text.match(BUILDER_TAG_RE);
+    if (!tagMatch) continue;
+
+    // key = track label if present, else numeric index string, else '0'
+    const key = tagMatch[2] ?? tagMatch[1] ?? '0';
+    const body = text.slice(tagMatch[0].length).trim();
+
+    // "Starting:\n..." — sets the planned total (preserves any done already counted)
+    const stepsMatch = body.match(/^(Starting|Healing):\n([\s\S]+)$/);
+    if (stepsMatch) {
+      const total = stepsMatch[2].split('\n').map(l => l.trim()).filter(Boolean).length;
+      const existing = map.get(key);
+      map.set(key, { total, done: existing?.done ?? 0, finished: existing?.finished ?? false });
+      continue;
+    }
+
+    // finish_build — mark done
+    if (body.startsWith('finish_build:')) {
+      const e = map.get(key) ?? { total: 0, done: 0, finished: false };
+      map.set(key, { ...e, finished: true, done: Math.max(e.done, e.total) });
+      continue;
+    }
+
+    // Substantive tool actions — increment done even if Starting hasn't appeared yet
+    const toolMatch = body.match(/^([a-z_]+):/);
+    if (toolMatch && PROGRESS_TOOLS.has(toolMatch[1])) {
+      const e = map.get(key) ?? { total: 0, done: 0, finished: false };
+      if (!e.finished) {
+        map.set(key, { ...e, done: e.total > 0 ? Math.min(e.done + 1, e.total) : e.done + 1 });
+      }
+    }
+  }
+
+  return map;
+}
 
 type MsgContent = {
   type?: string;
@@ -17,10 +72,28 @@ const TOOL_ICONS: Record<string, string> = {
   // research
   search_web: '🔍', navigate: '🌐', extract: '📄',
   finish: '✅', click_element: '🖱️',
-  // swarm
+  // swarm — file ops
   list_directory: '📁', read_file: '📄', write_file: '✏️',
   patch_file: '🔧', delete_file: '🗑️', run_command: '⚡',
   finish_build: '✅', report_plan: '📋',
+  // swarm — Phase 1-4 new tools
+  verify_build: '🔬',   // builder self-verification
+  find_symbol: '🔎',    // semantic symbol search
+  query_index: '📇',    // repo index lookup
+  run_coverage: '📊',   // test coverage measurement
+  str_replace_editor: '✏️',
+  install_packages: '📦',
+  git_diff: '🔀',
+  run_migration: '🗄️',
+  execute_sql: '🗄️',
+  fetch_url: '🌐',
+  run_tests: '🧪',
+  run_lint: '🔍',
+  run_type_check: '🔬',
+  run_application: '🚀',
+  memory_read: '🧠',
+  memory_write: '🧠',
+  memory_search_episodes: '🧠',
 };
 
 const TOOL_LABELS: Record<string, string> = {
@@ -30,6 +103,24 @@ const TOOL_LABELS: Record<string, string> = {
   write_file: 'Writing file', patch_file: 'Patching file',
   delete_file: 'Deleting file', run_command: 'Running command',
   finish_build: 'Build complete', report_plan: 'Reporting plan',
+  // Phase 1-4 new tools
+  verify_build: 'Verifying build',
+  find_symbol: 'Finding symbol',
+  query_index: 'Querying index',
+  run_coverage: 'Measuring coverage',
+  str_replace_editor: 'Editing file',
+  install_packages: 'Installing packages',
+  git_diff: 'Checking diff',
+  run_migration: 'Running migration',
+  execute_sql: 'Querying database',
+  fetch_url: 'Fetching URL',
+  run_tests: 'Running tests',
+  run_lint: 'Linting',
+  run_type_check: 'Type checking',
+  run_application: 'Starting application',
+  memory_read: 'Reading memory',
+  memory_write: 'Writing memory',
+  memory_search_episodes: 'Searching episodes',
 };
 
 // ── Agent tag parser ──────────────────────────────────────────────────────────
@@ -56,12 +147,33 @@ function parseTaggedMessage(text: string): {
   return { type, index, trackLabel, body };
 }
 
+// Single source of truth: assign color slots in first-seen order so the
+// LaunchCard positions and per-message AgentRow colors always agree.
+const _trackColorRegistry = new Map<string, number>();
+
+function builderColorIndex(index: number, trackLabel: string | null): number {
+  const key = trackLabel ?? String(index);
+  if (!_trackColorRegistry.has(key)) {
+    _trackColorRegistry.set(key, _trackColorRegistry.size);
+  }
+  return _trackColorRegistry.get(key)!;
+}
+
+// Pre-register all tracks from the launch message so the registry is
+// populated in order before any builder rows render.
+function seedBuilderColors(tracks: string[]) {
+  tracks.forEach((t, i) => {
+    if (!_trackColorRegistry.has(t)) _trackColorRegistry.set(t, i);
+  });
+}
+
 function agentSpriteIdxByType(type: AgentType, index: number): number {
   if (type === 'analyst') {
-    const slots = [1, 3, 4, 6, 7, 8];
+    // cycle through a few visually distinct avatars for parallel analysts
+    const slots = [13, 15, 19, 23, 5, 9];
     return slots[index % slots.length];
   }
-  return ROLE_TO_SPRITE[type] ?? 0;
+  return ROLE_TO_SPRITE[type as SwarmRole] ?? 1;
 }
 
 export { TAGGED_RE };
@@ -108,17 +220,101 @@ function ToolUseCard({ name, args }: { name: string; args: Record<string, unknow
   );
 }
 
+const ROLE_ACCENT: Record<string, string> = {
+  foreman:   '#f97316', // orange
+  pm:        '#8b5cf6', // violet
+  architect: '#3b82f6', // blue
+  builder:   '#10b981', // emerald
+  inspector: '#f59e0b', // amber
+  security:  '#ef4444', // red
+  devops:    '#06b6d4', // cyan
+  scout:     '#6366f1', // indigo
+  analyst:   '#ec4899', // pink
+  verifier:  '#14b8a6', // teal
+  critic:    '#f43f5e', // rose
+};
+
+// Translate a raw tool call into a sentence a human would understand
+function humanizeToolAction(toolName: string, detail: string): string {
+  const d = detail.trim();
+  const filename = d.split('/').pop() ?? d;
+
+  if (toolName === 'write_file') {
+    if (filename.includes('package')) return `Setting up package configuration`;
+    if (filename.match(/\.(tsx?|jsx?)$/)) return `Writing ${filename}`;
+    if (filename.match(/\.(css|scss|sass)$/)) return `Styling ${filename}`;
+    if (filename.match(/\.(json|yaml|yml|toml)$/)) return `Configuring ${filename}`;
+    if (filename.match(/\.(md|txt)$/)) return `Documenting ${filename}`;
+    if (filename.match(/dockerfile/i)) return `Writing Dockerfile`;
+    return `Writing ${filename}`;
+  }
+
+  if (toolName === 'patch_file') return `Updating ${filename}`;
+  if (toolName === 'read_file') return `Reading ${filename}`;
+  if (toolName === 'delete_file') return `Removing ${filename}`;
+  if (toolName === 'list_directory') return `Exploring project structure`;
+  if (toolName === 'finish_build') return `Finishing build`;
+  if (toolName === 'report_plan') return `Drafting build plan`;
+  if (toolName === 'str_replace_editor') return `Editing ${filename}`;
+  if (toolName === 'install_packages') return `Installing ${d.split(' ').slice(0, 3).join(' ')}`;
+  if (toolName === 'git_diff') return `Reviewing changes`;
+  if (toolName === 'run_migration') return `Running database migration`;
+  if (toolName === 'execute_sql') return `Querying database`;
+  if (toolName === 'fetch_url') return `Fetching ${d.replace(/^https?:\/\//, '').split('/')[0]}`;
+  if (toolName === 'run_tests') return `Running test suite`;
+  if (toolName === 'run_lint') return `Linting codebase`;
+  if (toolName === 'run_type_check') return `Type checking`;
+  if (toolName === 'run_coverage') return `Measuring test coverage`;
+  if (toolName === 'run_application') return `Starting application`;
+  if (toolName === 'memory_read') return `Loading build context`;
+  if (toolName === 'memory_write') return `Saving build context`;
+  if (toolName === 'memory_search_episodes') return `Searching past builds`;
+  if (toolName === 'verify_build') return `Verifying build (lint + types)`;
+  if (toolName === 'find_symbol') return `Finding ${d} in codebase`;
+  if (toolName === 'query_index') return `Looking up ${d} in index`;
+
+  if (toolName === 'run_command') {
+    const cmd = d.replace(/^cd\s+\S+\s*&&\s*/, '').trim();
+    if (/^npm (i|install)/.test(cmd)) return `Installing dependencies`;
+    if (/^npm run build/.test(cmd)) return `Building the project`;
+    if (/^npm run dev/.test(cmd)) return `Starting dev server`;
+    if (/^npm (run )?test/.test(cmd)) return `Running test suite`;
+    if (/^npm create/.test(cmd)) return `Scaffolding project with ${cmd.match(/vite|create-react|next|remix|astro/i)?.[0] ?? 'template'}`;
+    if (/^npx/.test(cmd)) return `Running ${cmd.split(' ')[1] ?? 'tool'}`;
+    if (/^git init/.test(cmd)) return `Initialising git repository`;
+    if (/^git add|git commit/.test(cmd)) return `Committing changes`;
+    if (/^git/.test(cmd)) return `Running git command`;
+    if (/^find\s/.test(cmd) && cmd.includes('-type f')) return `Scanning source files`;
+    if (/^ls\s/.test(cmd) || cmd === 'ls') return `Checking directory contents`;
+    if (/^mkdir/.test(cmd)) return `Creating directory structure`;
+    if (/^rm\s/.test(cmd)) return `Removing files`;
+    if (/^cp\s|^mv\s/.test(cmd)) return `Moving files`;
+    if (/^cat\s/.test(cmd)) return `Reading file contents`;
+    if (/^echo\s/.test(cmd)) return `Writing file contents`;
+    if (/^chmod|^chown/.test(cmd)) return `Setting permissions`;
+    if (/^curl|^wget/.test(cmd)) return `Fetching remote resource`;
+    if (/^python|^python3/.test(cmd)) return `Running Python script`;
+    if (/^node\s/.test(cmd)) return `Running Node.js script`;
+    return `Running shell command`;
+  }
+
+  return toolName.replace(/_/g, ' ');
+}
+
 function AgentRow({ text }: { text: string }) {
+  const [detailOpen, setDetailOpen] = useState(false);
   const parsed = parseTaggedMessage(text);
   if (!parsed) return null;
   const { type, index, trackLabel, body } = parsed;
   const spriteIdx = agentSpriteIdxByType(type, index);
   const roleLabel = ROLE_LABEL[type] ?? type;
   const displayLabel = trackLabel ? `${roleLabel} · ${trackLabel}` : roleLabel;
+  const accent = ROLE_ACCENT[type] ?? 'var(--text-secondary)';
 
   // Delegate to specialised cards for rich decision messages
+  if (PLAN_READY_RE.test(body)) return <PlanReadyCard text={body} />;
   if (TRACK_BREAKDOWN_RE.test(body)) return <TrackBreakdownCard body={body} />;
-  if (BUILDER_STEPS_RE.test(body)) return <BuilderStepsCard type={type} trackLabel={trackLabel} body={body} />;
+  if (BUILDER_STEPS_RE.test(body)) return <BuilderStepsCard type={type} trackLabel={trackLabel} body={body} index={index} />;
 
   // Detect tool action: "tool_name: detail"
   const actionMatch = body.match(/^([a-z_]+):\s*([\s\S]*)/);
@@ -126,45 +322,104 @@ function AgentRow({ text }: { text: string }) {
   const toolDetail = actionMatch ? actionMatch[2].trim() : null;
   const isKnownTool = toolName && (TOOL_ICONS[toolName] !== undefined || toolName.includes('_'));
   const toolIcon = toolName ? (TOOL_ICONS[toolName] ?? '⚙️') : null;
-  const toolLabel = toolName ? (TOOL_LABELS[toolName] ?? toolName) : null;
-  const bodyText = (isKnownTool ? toolDetail : body.trim()) ?? '';
+  const hasRawDetail = !!(isKnownTool && toolDetail);
+  const humanLabel = (isKnownTool && toolName) ? humanizeToolAction(toolName, toolDetail ?? '') : null;
+  const bodyText = (!isKnownTool ? body.trim() : '') ?? '';
+
+  const ringColor = type === 'builder'
+    ? BUILDER_RING_COLORS[builderColorIndex(index, trackLabel) % BUILDER_RING_COLORS.length]
+    : undefined;
+
+  const labelColor = ringColor ?? accent;
+  const progMap = useContext(BuilderProgressCtx);
+  const builderProg = type === 'builder' ? progMap.get(trackLabel ?? String(index)) : undefined;
 
   return (
     <div style={{
-      display: 'flex', alignItems: 'flex-start', gap: '0.625rem',
-      padding: '0.5rem 0.75rem',
-      background: 'var(--surface-raised)', borderRadius: '10px',
-      border: '1px solid var(--border)', marginBottom: '0.3rem',
+      borderLeft: `2px solid ${labelColor}25`,
+      padding: '0.375rem 0 0.375rem 0.625rem',
+      marginBottom: '0.125rem',
     }}>
-      <ChibiAvatar spriteIdx={spriteIdx} size={30} />
-      <div style={{ minWidth: 0, flex: 1, paddingTop: '0.05rem' }}>
-        <p style={{
-          fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
-          letterSpacing: '0.06em', color: 'var(--text-secondary)', opacity: 0.6,
-          marginBottom: '0.2rem',
+      {/* Main row */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.625rem' }}>
+        <div style={{
+          flexShrink: 0, borderRadius: '50%',
+          padding: ringColor ? '2px' : 0,
+          background: ringColor ?? 'transparent',
         }}>
-          {displayLabel}
-        </p>
-        {isKnownTool && toolLabel && (
-          <p style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent)', marginBottom: bodyText ? '0.15rem' : 0 }}>
-            {toolIcon} {toolLabel}
-          </p>
-        )}
-        {bodyText && (
-          <p style={{
-            fontSize: '0.8rem', color: 'var(--text-secondary)',
-            wordBreak: 'break-all', lineHeight: 1.5,
-            fontFamily: (isKnownTool && toolDetail) ? 'monospace' : 'inherit',
+          <ChibiAvatar spriteIdx={spriteIdx} size={22} />
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <span style={{
+            fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase',
+            letterSpacing: '0.05em', color: labelColor, opacity: 0.85,
+            marginRight: '0.4rem',
           }}>
-            {bodyText.length > 100 ? bodyText.slice(0, 100) + '…' : bodyText}
-          </p>
-        )}
-        {!isKnownTool && !bodyText && body.trim() && (
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            {body.trim().length > 120 ? body.trim().slice(0, 120) + '…' : body.trim()}
-          </p>
-        )}
+            {displayLabel}
+          </span>
+          {builderProg?.finished && (
+            <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--success)', marginRight: '0.25rem' }}>✓</span>
+          )}
+          {humanLabel ? (
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+              {toolIcon} {humanLabel}
+            </span>
+          ) : bodyText ? (
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {bodyText.length > 120 ? bodyText.slice(0, 120) + '…' : bodyText}
+            </span>
+          ) : null}
+          {/* Expand raw detail toggle */}
+          {hasRawDetail && (
+            <button
+              onClick={() => setDetailOpen(o => !o)}
+              style={{
+                marginLeft: '0.375rem', cursor: 'pointer',
+                padding: '0.15rem 0.4rem', borderRadius: '4px',
+                fontSize: '0.65rem', color: 'var(--text-secondary)',
+                fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
+                background: detailOpen ? 'var(--surface-raised)' : 'transparent',
+                border: '1px solid var(--border)',
+                transition: 'background 0.1s, border-color 0.1s',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-raised)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--text-secondary)';
+              }}
+              onMouseLeave={e => {
+                if (!detailOpen) (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
+              }}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+                style={{ width: 11, height: 11 }}>
+                <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              <span>raw</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
+                style={{ width: 9, height: 9, transition: 'transform 0.12s', transform: detailOpen ? 'rotate(180deg)' : 'none' }}>
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
+      {/* Raw command / path — expandable */}
+      {hasRawDetail && detailOpen && (
+        <div style={{ marginTop: '0.35rem', marginLeft: '2.375rem', marginRight: '0.5rem' }}>
+          <pre style={{
+            margin: 0, padding: '0.5rem 0.75rem',
+            background: 'var(--surface-raised)', borderRadius: '6px',
+            fontSize: '0.72rem', fontFamily: 'monospace',
+            color: 'var(--text-primary)',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+            border: '1px solid var(--border)',
+            lineHeight: 1.6,
+          }}>
+            {toolDetail!.length > 400 ? toolDetail!.slice(0, 400) + '…' : toolDetail}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -229,38 +484,128 @@ function TrackBreakdownCard({ body }: { body: string }) {
 // ── Builder step list card ────────────────────────────────────────────────────
 const BUILDER_STEPS_RE = /^(Starting|Healing):\n([\s\S]+)$/;
 
-function BuilderStepsCard({ type, trackLabel, body }: { type: AgentType; trackLabel: string | null; body: string }) {
+function BuilderStepsCard({ type, trackLabel, body, index }: { type: AgentType; trackLabel: string | null; body: string; index: number }) {
+  const [open, setOpen] = useState(false);
   const m = body.match(BUILDER_STEPS_RE);
   if (!m) return null;
   const header = m[1];
   const lines = m[2].split('\n').map(l => l.trim()).filter(Boolean);
   const isHealing = header === 'Healing';
   const displayLabel = trackLabel ? `Builder · ${trackLabel}` : 'Builder';
+  const accent = BUILDER_RING_COLORS[builderColorIndex(index, trackLabel) % BUILDER_RING_COLORS.length];
+  const progMap = useContext(BuilderProgressCtx);
+  const progKey = trackLabel ?? String(index);
+  const prog = progMap.get(progKey);
+  const hasTotal = prog && prog.total > 0;
+  const pct = prog
+    ? prog.finished ? 100
+      : hasTotal ? Math.round((prog.done / prog.total) * 100)
+      : 0
+    : 0;
 
   return (
     <div style={{
-      padding: '0.625rem 0.75rem', background: 'var(--surface-raised)',
-      borderRadius: '10px', border: `1px solid ${isHealing ? 'color-mix(in srgb, var(--warning) 30%, transparent)' : 'var(--border)'}`,
-      marginBottom: '0.3rem',
+      borderLeft: `2px solid ${accent}30`,
+      padding: '0.375rem 0 0.5rem 0.625rem',
+      marginBottom: '0.125rem',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-        <ChibiAvatar role="builder" size={24} />
-        <p style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-secondary)' }}>
-          {displayLabel} · {isHealing ? '🔧 Healing' : 'Starting'}
-        </p>
+      {/* Summary row — always visible */}
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', cursor: 'pointer', borderRadius: '6px', padding: '0.2rem 0.4rem 0.2rem 0.2rem', marginLeft: '-0.2rem' }}
+        onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-raised)'; }}
+        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+      >
+        <div style={{ flexShrink: 0, borderRadius: '50%', padding: '2px', background: accent }}>
+          <ChibiAvatar role="builder" size={22} />
+        </div>
+        <span style={{ fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: accent, opacity: 0.9 }}>
+          {displayLabel}
+        </span>
+        <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          {isHealing ? '🔧 Healing' : 'Starting'} — {lines.length} steps
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.375rem', flexShrink: 0 }}>
+          {prog && (
+            prog.finished ? (
+              <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--success)' }}>Done ✓</span>
+            ) : hasTotal ? (
+              <span style={{ fontSize: '0.65rem', fontWeight: 600, color: accent, opacity: 0.8 }}>
+                {prog.done}/{prog.total}
+              </span>
+            ) : prog.done > 0 ? (
+              <span style={{ fontSize: '0.65rem', fontWeight: 600, color: accent, opacity: 0.7 }}>
+                {prog.done} actions
+              </span>
+            ) : null
+          )}
+          <svg
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
+            style={{ width: 13, height: 13, color: 'var(--text-secondary)', transition: 'transform 0.15s', transform: open ? 'rotate(180deg)' : 'none' }}
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </div>
       </div>
-      <ol style={{ margin: 0, padding: '0 0 0 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-        {lines.map((line, i) => (
-          <li key={i} style={{
-            fontSize: '0.775rem', color: 'var(--text-secondary)', lineHeight: 1.5,
-            opacity: line.startsWith('…') ? 0.5 : 1,
-            listStyle: line.startsWith('…') ? 'none' : 'decimal',
-            marginLeft: line.startsWith('…') ? '-1.25rem' : 0,
+
+      {/* Progress bar */}
+      {prog && (
+        <div style={{ marginTop: '0.3rem', marginLeft: '0.2rem', marginRight: '0.4rem' }}>
+          <style>{`@keyframes indeterminate { 0%{transform:translateX(-100%)} 100%{transform:translateX(500%)} }`}</style>
+          <div style={{
+            height: 3, borderRadius: 999,
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border)',
+            overflow: 'hidden', position: 'relative',
           }}>
-            {line.replace(/^\d+\.\s*/, '')}
-          </li>
-        ))}
-      </ol>
+            {prog.finished ? (
+              <div style={{ height: '100%', width: '100%', background: 'var(--success)', borderRadius: 999 }} />
+            ) : hasTotal ? (
+              <div style={{
+                height: '100%', width: `${pct}%`,
+                background: `linear-gradient(90deg, ${accent}, ${accent}cc)`,
+                borderRadius: 999, transition: 'width 0.4s ease',
+              }} />
+            ) : (
+              <div style={{
+                position: 'absolute', height: '100%', width: '30%',
+                background: `linear-gradient(90deg, transparent, ${accent}, transparent)`,
+                animation: 'indeterminate 1.6s ease-in-out infinite',
+              }} />
+            )}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.15rem' }}>
+            <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', opacity: 0.45 }}>
+              {prog.finished ? 'Complete' : hasTotal ? `${pct}% complete` : `${prog.done} actions taken`}
+            </span>
+            {!prog.finished && hasTotal && (
+              <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', opacity: 0.45 }}>
+                {prog.total - prog.done} remaining
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Expandable steps */}
+      {open && (
+        <ol style={{ margin: '0.375rem 0 0 2.5rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.1rem' }}>
+          {lines.map((line, i) => {
+            const done = prog ? i < prog.done : false;
+            return (
+              <li key={i} style={{
+                fontSize: '0.75rem', lineHeight: 1.6,
+                listStyleType: 'decimal', marginLeft: '1rem',
+                color: done ? 'var(--text-primary)' : 'var(--text-secondary)',
+                opacity: done ? 1 : 0.6,
+              }}>
+                {line.replace(/^\d+\.\s*/, '')}
+                {done && <span style={{ marginLeft: '0.3rem', color: 'var(--success)', fontSize: '0.65rem' }}>✓</span>}
+              </li>
+            );
+          })}
+        </ol>
+      )}
     </div>
   );
 }
@@ -272,43 +617,86 @@ function PlanReadyCard({ text }: { text: string }) {
   const m = text.match(PLAN_READY_RE);
   if (!m) return <TextBubble text={text} />;
   const count = parseInt(m[1], 10);
-  const tracks = m[2].trim().split(/\s*,\s*/).map(t => t.replace(/…$/, '').trim()).filter(Boolean);
-  const stack = m[3]?.trim() ?? '';
+  const tracks = m[2].trim().split(/\s*,\s*/).map(t => t.replace(/[…\.]+$/, '').trim()).filter(Boolean);
+  const stackRaw = m[3]?.trim().replace(/…$/, '') ?? '';
+  const stackItems = stackRaw ? stackRaw.split(/\s*,\s*/).map(s => s.trim()).filter(Boolean) : [];
+
+  // Seed registry so builder colors are consistent with later activity rows
+  seedBuilderColors(tracks);
 
   return (
     <div style={{
-      padding: '0.75rem', background: 'var(--surface-raised)',
       borderRadius: '10px', border: '1px solid var(--border)',
-      marginBottom: '0.375rem',
+      background: 'var(--surface)', overflow: 'hidden',
+      marginBottom: '0.5rem',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.625rem' }}>
-        <ChibiAvatar role="architect" size={26} />
-        <p style={{
-          fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase',
-          letterSpacing: '0.07em', color: 'var(--text-secondary)',
+      {/* Header */}
+      <div style={{
+        padding: '0.5rem 0.875rem',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: '0.625rem',
+        background: 'color-mix(in srgb, #3b82f6 6%, transparent)',
+      }}>
+        <ChibiAvatar role="architect" size={20} />
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', flex: 1 }}>
+          Architect has finalized a <span style={{ color: 'var(--text-primary)' }}>build plan</span>
+        </span>
+        <span style={{
+          fontSize: '0.65rem', fontWeight: 700,
+          background: 'color-mix(in srgb, #3b82f6 15%, transparent)',
+          color: '#3b82f6', borderRadius: '999px', padding: '0.1rem 0.5rem',
+          border: '1px solid color-mix(in srgb, #3b82f6 30%, transparent)',
         }}>
-          Architect · Plan ready — {count} track{count > 1 ? 's' : ''}
-        </p>
+          {count} track{count > 1 ? 's' : ''}
+        </span>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem', marginBottom: stack ? '0.5rem' : 0 }}>
-        {tracks.map((t, i) => (
-          <span key={i} style={{
-            fontSize: '0.75rem', fontWeight: 600, fontFamily: 'monospace',
-            background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
-            color: 'var(--accent)',
-            border: '1px solid color-mix(in srgb, var(--accent) 25%, transparent)',
-            padding: '0.2rem 0.5rem', borderRadius: '5px',
-          }}>
-            {t}
+      {/* Track rows */}
+      <div style={{ padding: '0.375rem 0.75rem 0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+        {tracks.map((track, i) => {
+          const color = BUILDER_RING_COLORS[builderColorIndex(0, track) % BUILDER_RING_COLORS.length];
+          return (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+              padding: '0.3rem 0.5rem',
+              background: `color-mix(in srgb, ${color} 7%, transparent)`,
+              borderRadius: '6px',
+              border: `1px solid color-mix(in srgb, ${color} 20%, transparent)`,
+            }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+              <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'monospace', flex: 1 }}>
+                {track}
+              </span>
+              <span style={{ fontSize: '0.65rem', color, fontWeight: 600, opacity: 0.8 }}>
+                {builderPurpose(track).role}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Tech stack */}
+      {stackItems.length > 0 && (
+        <div style={{
+          padding: '0.4rem 0.875rem 0.5rem',
+          borderTop: '1px solid var(--border)',
+          display: 'flex', flexWrap: 'wrap', gap: '0.3rem', alignItems: 'center',
+        }}>
+          <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-secondary)', opacity: 0.45, marginRight: '0.25rem' }}>
+            Stack
           </span>
-        ))}
-      </div>
-
-      {stack && (
-        <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', opacity: 0.6, fontFamily: 'monospace' }}>
-          {stack}
-        </p>
+          {stackItems.map((s, i) => (
+            <span key={i} style={{
+              fontSize: '0.72rem', fontWeight: 500, fontFamily: 'monospace',
+              background: 'var(--surface-raised)',
+              color: 'var(--text-secondary)',
+              border: '1px solid var(--border)',
+              padding: '0.1rem 0.45rem', borderRadius: '4px',
+            }}>
+              {s}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -317,52 +705,131 @@ function PlanReadyCard({ text }: { text: string }) {
 // ── Parallel launch card ──────────────────────────────────────────────────────
 const LAUNCH_RE = /^Launching (\d+) parallel builders[^:]*:\s*(.+)$/;
 
+// Derive a human-readable purpose sentence from an arbitrary track name
+function builderPurpose(track: string): { role: string; goal: string } {
+  const norm = track.toLowerCase().replace(/[-_]/g, ' ');
+  const kw = (w: string) => norm.includes(w);
+
+  if (kw('scaffold') || kw('setup') || kw('init') || kw('bootstrap'))
+    return { role: 'Project Scaffolder', goal: 'Initialises the repository structure, installs dependencies, configures build tools, and lays the foundation all other builders build on.' };
+  if (kw('auth') || kw('login') || kw('session') || kw('jwt') || kw('oauth'))
+    return { role: 'Auth Engineer', goal: 'Implements the full authentication surface — registration, login, password reset, session tokens, and route guards.' };
+  if (kw('dashboard') || kw('layout') || kw('shell') || kw('nav') || kw('sidebar'))
+    return { role: 'Layout Architect', goal: 'Builds the app shell, navigation, sidebar, and dashboard skeleton that houses every page.' };
+  if (kw('api') || kw('backend') || kw('server') || kw('route') || kw('endpoint'))
+    return { role: 'API Engineer', goal: 'Creates server-side routes, controllers, middleware, and wires data models to HTTP endpoints.' };
+  if (kw('db') || kw('database') || kw('model') || kw('schema') || kw('migrat'))
+    return { role: 'Data Engineer', goal: 'Designs and migrates the database schema, writes ORM models, and seeds initial data.' };
+  if (kw('ui') || kw('component') || kw('design') || kw('style') || kw('theme') || kw('tailwind') || kw('css'))
+    return { role: 'UI Specialist', goal: 'Crafts reusable components, applies the design system, and ensures visual consistency across screens.' };
+  if (kw('test') || kw('spec') || kw('e2e') || kw('unit') || kw('cypress') || kw('jest') || kw('vitest'))
+    return { role: 'QA Engineer', goal: 'Writes unit, integration, and end-to-end test suites to verify correctness and prevent regressions.' };
+  if (kw('deploy') || kw('ci') || kw('docker') || kw('infra') || kw('devops') || kw('pipeline'))
+    return { role: 'DevOps Engineer', goal: 'Configures CI/CD pipelines, Dockerfiles, environment variables, and deployment scripts.' };
+  if (kw('feature') || kw('module') || kw('page') || kw('view') || kw('screen'))
+    return { role: 'Feature Builder', goal: `Owns the end-to-end implementation of the "${track.replace(/[-_]/g, ' ')}" feature — components, logic, and data flow.` };
+  if (kw('check') || kw('compliance') || kw('audit') || kw('report') || kw('log'))
+    return { role: 'Compliance Engineer', goal: `Implements "${track.replace(/[-_]/g, ' ')}" — tracking, reporting, and audit trail functionality.` };
+
+  // Generic fallback
+  const friendly = track.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return { role: 'Builder', goal: `Responsible for delivering the "${friendly}" work stream — writing files, running commands, and leaving the code ready for review.` };
+}
+
 function LaunchCard({ text }: { text: string }) {
   const m = text.match(LAUNCH_RE);
   if (!m) return <TextBubble text={text} />;
   const count = parseInt(m[1], 10);
   const tracks = m[2].split(/\s*\+\s*/).map(t => t.trim()).filter(Boolean);
+  // Seed the registry in order so downstream AgentRows share the same slots
+  seedBuilderColors(tracks);
+  const [openIdx, setOpenIdx] = useState<number | null>(null);
 
   return (
     <div style={{
-      padding: '0.75rem', background: 'var(--surface-raised)',
-      borderRadius: '10px', border: '1px solid var(--border)',
-      marginBottom: '0.375rem',
+      borderRadius: '10px',
+      border: '1px solid var(--border)',
+      background: 'var(--surface)',
+      overflow: 'hidden',
+      marginBottom: '0.5rem',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.625rem' }}>
-        {/* stacked builder avatars */}
-        <div style={{ display: 'flex' }}>
-          {Array.from({ length: Math.min(count, 4) }).map((_, i) => (
-            <ChibiAvatar
-              key={i} role="builder" size={26}
-              style={{
-                marginLeft: i === 0 ? 0 : -8,
-                border: '2px solid var(--surface-raised)',
-                zIndex: count - i, position: 'relative',
-              }}
-            />
+      {/* Header */}
+      <div style={{
+        padding: '0.5rem 0.875rem',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: '0.625rem',
+        background: 'color-mix(in srgb, var(--accent) 5%, transparent)',
+      }}>
+        <ChibiAvatar role="foreman" size={20} />
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', flex: 1 }}>
+          Foreman dispatching <span style={{ color: 'var(--text-primary)' }}>{count} builders</span> in parallel
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          {Array.from({ length: Math.min(count, 6) }).map((_, i) => (
+            <div key={i} style={{
+              borderRadius: '50%', padding: '2px',
+              background: BUILDER_RING_COLORS[i % BUILDER_RING_COLORS.length],
+              marginLeft: i === 0 ? 0 : -6,
+              position: 'relative', zIndex: count - i,
+            }}>
+              <ChibiAvatar role="builder" size={22} />
+            </div>
           ))}
         </div>
-        <p style={{
-          fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase',
-          letterSpacing: '0.07em', color: 'var(--text-secondary)',
-        }}>
-          Foreman · Launching {count} builders in parallel
-        </p>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
-        {tracks.map((t, i) => (
-          <span key={i} style={{
-            fontSize: '0.75rem', fontWeight: 600, fontFamily: 'monospace',
-            background: 'color-mix(in srgb, var(--success) 10%, transparent)',
-            color: 'var(--success)',
-            border: '1px solid color-mix(in srgb, var(--success) 25%, transparent)',
-            padding: '0.2rem 0.5rem', borderRadius: '5px',
-          }}>
-            {t}
-          </span>
-        ))}
+      {/* Track list */}
+      <div style={{ padding: '0.375rem 0.75rem 0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+        {tracks.map((track, i) => {
+          const color = BUILDER_RING_COLORS[builderColorIndex(0, track) % BUILDER_RING_COLORS.length];
+          const isOpen = openIdx === i;
+          const { role, goal } = builderPurpose(track);
+          return (
+            <div key={i} style={{
+              borderRadius: '7px',
+              border: `1px solid color-mix(in srgb, ${color} 22%, transparent)`,
+              background: `color-mix(in srgb, ${color} 6%, transparent)`,
+              overflow: 'hidden',
+            }}>
+              {/* Summary row */}
+              <div
+                onClick={() => setOpenIdx(isOpen ? null : i)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.5rem',
+                  padding: '0.35rem 0.5rem', cursor: 'pointer',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = `color-mix(in srgb, ${color} 12%, transparent)`; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+              >
+                <div style={{ borderRadius: '50%', padding: '2px', background: color, flexShrink: 0 }}>
+                  <ChibiAvatar role="builder" size={18} />
+                </div>
+                <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-primary)', fontFamily: 'monospace', flex: 1 }}>
+                  {track}
+                </span>
+                <span style={{ fontSize: '0.65rem', color, fontWeight: 600, opacity: 0.8, marginRight: '0.25rem' }}>
+                  {role}
+                </span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
+                  style={{ width: 12, height: 12, color: 'var(--text-secondary)', flexShrink: 0, transition: 'transform 0.15s', transform: isOpen ? 'rotate(180deg)' : 'none' }}>
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
+
+              {/* Expanded goal */}
+              {isOpen && (
+                <div style={{
+                  padding: '0.375rem 0.75rem 0.5rem 2.5rem',
+                  borderTop: `1px solid color-mix(in srgb, ${color} 18%, transparent)`,
+                }}>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.65, margin: 0 }}>
+                    {goal}
+                  </p>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -727,6 +1194,152 @@ function ClarificationCard({
   );
 }
 
+// ── Swarm kickoff card ────────────────────────────────────────────────────────
+
+const KICKOFF_RE = /^Swarm Factory activated\.\nGoal:\s*(.+)\nRepo:\s*(.+?)\s*\|\s*Branch:\s*(.+)$/s;
+const FOLLOWUP_RE = /^Swarm Factory re-activated \(follow-up #(\d+)\)\.\nGoal:\s*(.+)\nRepo:\s*(.+?)\s*\|\s*Branch:\s*(.+)$/s;
+
+function KickoffCard({ text }: { text: string }) {
+  const m = text.match(KICKOFF_RE);
+  if (!m) return null;
+  const [, goal, repo, branch] = m;
+  const repoName = repo.split('/').pop() ?? repo;
+  return (
+    <div style={{
+      borderRadius: '10px',
+      border: '1px solid var(--border)',
+      background: 'var(--surface)',
+      overflow: 'hidden',
+      marginBottom: '0.5rem',
+    }}>
+      {/* Header strip */}
+      <div style={{
+        padding: '0.5rem 0.875rem',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: '0.5rem',
+        background: 'color-mix(in srgb, var(--accent) 6%, transparent)',
+      }}>
+        <ChibiAvatar role="foreman" size={20} />
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Swarm Factory
+        </span>
+        <span style={{
+          marginLeft: 'auto', fontSize: '0.65rem', fontWeight: 600,
+          background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+          color: 'var(--accent)', borderRadius: '999px', padding: '0.1rem 0.5rem',
+        }}>
+          Activated
+        </span>
+      </div>
+
+      {/* Goal */}
+      <div style={{ padding: '0.625rem 0.875rem', borderBottom: '1px solid var(--border)' }}>
+        <p style={{ fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-secondary)', opacity: 0.5, marginBottom: '0.25rem' }}>
+          Goal
+        </p>
+        <p style={{ fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: 1.6, margin: 0 }}>
+          {goal.trim()}
+        </p>
+      </div>
+
+      {/* Repo + Branch */}
+      <div style={{ padding: '0.5rem 0.875rem', display: 'flex', gap: '1.25rem', flexWrap: 'wrap' }}>
+        <div>
+          <p style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-secondary)', opacity: 0.45, marginBottom: '0.15rem' }}>Repo</p>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'monospace', margin: 0 }} title={repo}>
+            {repoName}
+          </p>
+        </div>
+        <div>
+          <p style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-secondary)', opacity: 0.45, marginBottom: '0.15rem' }}>Branch</p>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'monospace', margin: 0 }}>
+            {branch.trim()}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Follow-up triage card ─────────────────────────────────────────────────────
+
+function FollowUpCard({ text }: { text: string }) {
+  const m = text.match(FOLLOWUP_RE);
+  if (!m) return null;
+  const [, iterStr, goal, repo, branch] = m;
+  const iteration = parseInt(iterStr, 10);
+  const repoName = repo.split('/').pop() ?? repo;
+  const AMBER = '#f59e0b';
+
+  return (
+    <div style={{
+      borderRadius: '10px',
+      border: `1px solid color-mix(in srgb, ${AMBER} 30%, var(--border))`,
+      background: 'var(--surface)',
+      overflow: 'hidden',
+      marginBottom: '0.5rem',
+      marginTop: '0.75rem',
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: '0.5rem 0.875rem',
+        borderBottom: `1px solid color-mix(in srgb, ${AMBER} 20%, var(--border))`,
+        display: 'flex', alignItems: 'center', gap: '0.5rem',
+        background: `color-mix(in srgb, ${AMBER} 8%, transparent)`,
+      }}>
+        <ChibiAvatar role="foreman" size={20} />
+        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: AMBER, textTransform: 'uppercase', letterSpacing: '0.06em', flex: 1 }}>
+          Follow-up received
+        </span>
+        {/* Iteration counter */}
+        <span style={{
+          fontSize: '0.65rem', fontWeight: 700,
+          background: `color-mix(in srgb, ${AMBER} 15%, transparent)`,
+          color: AMBER, borderRadius: '999px', padding: '0.1rem 0.5rem',
+          border: `1px solid color-mix(in srgb, ${AMBER} 30%, transparent)`,
+        }}>
+          #{iteration}
+        </span>
+      </div>
+
+      {/* Request */}
+      <div style={{ padding: '0.625rem 0.875rem', borderBottom: `1px solid color-mix(in srgb, ${AMBER} 12%, var(--border))` }}>
+        <p style={{ fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-secondary)', opacity: 0.5, marginBottom: '0.25rem' }}>
+          Request
+        </p>
+        <p style={{ fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: 1.6, margin: 0 }}>
+          {goal.trim()}
+        </p>
+      </div>
+
+      {/* Meta row — repo + branch + visual "continuing" indicator */}
+      <div style={{ padding: '0.4rem 0.875rem', display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ color: AMBER, opacity: 0.6, flexShrink: 0 }}>
+            <line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>
+            <path d="M18 9a9 9 0 0 1-9 9"/>
+          </svg>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }} title={repo}>
+            {repoName}
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ color: AMBER, opacity: 0.6, flexShrink: 0 }}>
+            <line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>
+            <path d="M18 9a9 9 0 0 1-9 9"/>
+          </svg>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
+            {branch.trim()}
+          </span>
+        </div>
+        <span style={{ marginLeft: 'auto', fontSize: '0.65rem', color: AMBER, opacity: 0.6, fontWeight: 500 }}>
+          continuing from build {iteration - 1}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function TextBubble({ text }: { text: string }) {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -767,6 +1380,8 @@ function MessageRow({ message, taskId, autoApprove }: { message: TaskMessage; ta
     if (text.startsWith(CLARIFICATION_RESOLVED_PREFIX)) return null;
 
     if (text.startsWith('## Swarm Factory Report')) return null;
+    if (FOLLOWUP_RE.test(text)) return <FollowUpCard text={text} />;
+    if (KICKOFF_RE.test(text)) return <KickoffCard text={text} />;
     if (STRATEGY_RE.test(text)) return <StrategyCard text={text} />;
     if (TAGGED_RE.test(text)) {
       const parsed = parseTaggedMessage(text);
@@ -797,6 +1412,7 @@ export function MessageFeed({
   autoApprove?: boolean;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const builderProgress = useMemo(() => computeBuilderProgress(messages), [messages]);
 
   useEffect(() => {
     if (isRunning) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -812,6 +1428,7 @@ export function MessageFeed({
   }
 
   return (
+    <BuilderProgressCtx.Provider value={builderProgress}>
     <div>
       {messages.map((msg) => <MessageRow key={msg.id} message={msg} taskId={taskId} autoApprove={autoApprove} />)}
       {isRunning && (
@@ -822,6 +1439,7 @@ export function MessageFeed({
       )}
       <div ref={bottomRef} />
     </div>
+    </BuilderProgressCtx.Provider>
   );
 }
 

@@ -22,14 +22,46 @@ export type SwarmAgentRow = {
   messageCount: number;
 };
 
-// Matches swarm tags
-const SWARM_TAG = /^\[(Foreman|Architect|Builder|Inspector|Security|DevOps)\]\s*/;
+// Matches swarm tags — includes PM agent added in Phase 1
+const SWARM_TAG = /^\[(PM|Foreman|Architect|Builder|Inspector|Security|DevOps)\]\s*/;
 
 // Detects structured status reports emitted by the Foreman
 // e.g. "[Foreman] Dispatching Builder (cycle 2)..."
+// Also handles Phase 4 wave messages: "[Foreman] wave 1/2: launching 2 builder(s) — backend + api"
 const FOREMAN_DISPATCH = /Dispatching (\w+)/i;
+const FOREMAN_WAVE = /wave \d+\/\d+: launching \d+ builder/i;
 const HEAL_CYCLE = /heal cycle (\d+)/i;
 const BUILDER_STEP = /\[Builder\] (write_file|patch_file|create|modify|delete):\s*(.+)/i;
+
+// Parses the tier announcement added in Phase 1/3:
+// "[Foreman] Complexity tier: Standard (Tier 2) (~45 files, ~30 min, risks: auth) — ..."
+const TIER_ANNOUNCE_RE = /Complexity tier:\s*(\w+)\s*\(Tier (\d+)\)(?:\s*\(([^)]+)\))?/i;
+
+export type TierMeta = {
+  label: string;
+  tier: number;
+  estimatedFiles?: number;
+  estimatedMinutes?: number;
+  riskFlags: string[];
+};
+
+export function parseTierAnnouncement(text: string): TierMeta | null {
+  const m = text.match(TIER_ANNOUNCE_RE);
+  if (!m) return null;
+  const label = m[1];
+  const tier = parseInt(m[2], 10);
+  const details = m[3] ?? '';
+  const filesMatch = details.match(/~(\d+)\s*files?/i);
+  const minsMatch = details.match(/~(\d+)\s*min/i);
+  const risksMatch = details.match(/risks?:\s*([^)]+)/i);
+  return {
+    label,
+    tier,
+    estimatedFiles: filesMatch ? parseInt(filesMatch[1], 10) : undefined,
+    estimatedMinutes: minsMatch ? parseInt(minsMatch[1], 10) : undefined,
+    riskFlags: risksMatch ? risksMatch[1].split(/,\s*/).map(s => s.trim()).filter(Boolean) : [],
+  };
+}
 
 function statusFromBody(body: string): AgentStatus {
   const lower = body.toLowerCase();
@@ -82,8 +114,8 @@ function extractSummary(role: string, body: string): string {
 }
 
 export function buildSwarmPipeline(messages: { content: string }[]): SwarmAgentRow[] {
-  // Ordered pipeline stages
-  const PIPELINE = ['Foreman', 'Architect', 'Builder', 'Inspector', 'Security', 'DevOps'];
+  // Ordered pipeline stages — PM added (Phase 1)
+  const PIPELINE = ['Foreman', 'PM', 'Architect', 'Builder', 'Inspector', 'Security', 'DevOps'];
 
   // Initialize all rows as idle
   const rows = new Map<string, SwarmAgentRow>(
@@ -126,6 +158,12 @@ export function buildSwarmPipeline(messages: { content: string }[]): SwarmAgentR
       row.status = 'done';
     }
 
+    // Re-plan: Architect goes back to running when Foreman triggers a re-plan (Phase 2)
+    if (role === 'Architect' && body.toLowerCase().includes('re-planning')) {
+      row.status = 'running';
+      row.summary = 'Re-planning after build failure…';
+    }
+
     // Track heal cycles for Inspector/Builder
     const healMatch = body.match(HEAL_CYCLE);
     if (healMatch) {
@@ -156,6 +194,7 @@ export function buildSwarmPipeline(messages: { content: string }[]): SwarmAgentR
     }
 
     // Foreman dispatching a role → mark that role as running
+    // Also handles Phase 4 wave messages: "wave 1/2: launching 2 builder(s) — ..."
     if (role === 'Foreman') {
       const dispatch = body.match(FOREMAN_DISPATCH);
       if (dispatch) {
@@ -163,6 +202,11 @@ export function buildSwarmPipeline(messages: { content: string }[]): SwarmAgentR
         if (target && target.status === 'idle') {
           target.status = 'running';
         }
+      }
+      // Wave launch → mark Builder as running
+      if (FOREMAN_WAVE.test(body)) {
+        const builder = rows.get('Builder');
+        if (builder) builder.status = 'running';
       }
     }
   }
