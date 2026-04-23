@@ -5,6 +5,26 @@ Runs tests, lints, and type checks. Triggers self-healing if failures found.
 
 INSPECTOR_TOOLS: list[dict] = [
     {
+        "name": "run_coverage",
+        "description": (
+            "Run the test suite with coverage measurement and return a coverage report. "
+            "Use after run_tests passes to verify the new code is actually covered by tests. "
+            "Example commands: 'pytest --cov=src --cov-report=term-missing -q', "
+            "'npx jest --coverage --coverageReporters=text'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Coverage command to run.",
+                },
+                "cwd": {"type": "string", "description": "Working directory (default: repo root)."},
+            },
+            "required": ["command"],
+        },
+    },
+    {
         "name": "run_tests",
         "description": (
             "Run the project's test suite. Returns pass/fail counts and output. "
@@ -230,6 +250,8 @@ INSPECTOR_TOOLS: list[dict] = [
                 "test_passed": {"type": "integer", "description": "Number of tests passed."},
                 "test_failed": {"type": "integer", "description": "Number of tests failed."},
                 "test_errors": {"type": "integer", "description": "Number of test errors."},
+                "coverage_pct": {"type": "number", "description": "Overall test coverage percentage (0-100). Omit if not measured."},
+                "coverage_summary": {"type": "string", "description": "Coverage report summary. Omit if not measured."},
             },
             "required": ["passed", "summary"],
         },

@@ -5,7 +5,7 @@ Two layers:
   facts.json     — structured key/value facts, written by any agent during a build
   episodes.jsonl — one JSON line per completed build, written by the orchestrator
 
-Both live under .keystone/memory/ relative to repo_path.
+Both live under .gantry/memory/ relative to repo_path.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from temporalio import activity
 
-_MEMORY_DIR = ".keystone/memory"
+_MEMORY_DIR = ".gantry/memory"
 _FACTS_FILE = "facts.json"
 _EPISODES_FILE = "episodes.jsonl"
 
@@ -56,7 +56,12 @@ async def memory_write_fact(
 
 @activity.defn(name="memory_read_facts")
 async def memory_read_facts(repo_path: str, keys: list[str] | None = None) -> str:
-    """Return all facts (or a subset by key list) as a formatted string."""
+    """
+    Return all facts (or a subset by key list) as a formatted string.
+    Facts older than TTL_DAYS are flagged as stale for architectural keys
+    (prefixed with 'arch.' or 'pm.') and excluded from the default view.
+    """
+    TTL_DAYS = 90
     facts_path = _memory_dir(repo_path) / _FACTS_FILE
     if not facts_path.exists():
         return "No facts stored yet."
@@ -64,16 +69,42 @@ async def memory_read_facts(repo_path: str, keys: list[str] | None = None) -> st
         data: dict = json.loads(facts_path.read_text())
     except Exception:
         return "Error reading facts (malformed JSON)."
+
+    now = datetime.now(timezone.utc)
     subset = {k: v for k, v in data.items() if k in keys} if keys else data
+
     if not subset:
         return "No matching facts found."
+
     lines = []
+    stale_keys: list[str] = []
     for k, v in subset.items():
         if isinstance(v, dict):
+            # Check TTL for architectural/pm facts
+            updated_at = v.get("updated_at", "")
+            is_stale = False
+            if updated_at and k.startswith(("arch.", "pm.")):
+                try:
+                    age = now - datetime.fromisoformat(updated_at)
+                    if age.days > TTL_DAYS:
+                        is_stale = True
+                        stale_keys.append(k)
+                except Exception:
+                    pass
+            if is_stale:
+                continue  # exclude stale architectural facts from active context
             lines.append(f"**{k}** [{v.get('agent', '?')}]: {v.get('value', '')}")
         else:
             lines.append(f"**{k}**: {v}")
-    return "\n".join(lines)
+
+    if stale_keys:
+        lines.append(
+            f"\n[{len(stale_keys)} stale fact(s) excluded (>{TTL_DAYS}d old): "
+            + ", ".join(stale_keys[:5])
+            + "]"
+        )
+
+    return "\n".join(lines) if lines else "No active facts found (all may be stale)."
 
 
 # ── Episodes ──────────────────────────────────────────────────────────────────

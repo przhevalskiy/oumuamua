@@ -269,9 +269,71 @@ BUILDER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "query_index",
+        "description": (
+            "Query the repo symbol index to find where a function, class, or type is defined. "
+            "Use this BEFORE find_symbol or read_file when you know the symbol name — it's instant. "
+            "Returns file paths and line numbers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_path": {"type": "string", "description": "Absolute repo root path."},
+                "query": {"type": "string", "description": "Symbol name to look up (substring match)."},
+                "top_k": {"type": "integer", "description": "Max results to return (default 20)."},
+            },
+            "required": ["repo_path", "query"],
+        },
+    },
+    {
+        "name": "find_symbol",
+        "description": (
+            "Find where a function, class, type, or interface is DEFINED in the repo. "
+            "Use this BEFORE read_file when you need to locate a symbol — it's much faster "
+            "than reading files one by one. Returns file path, line number, and the definition line."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to find (function, class, type, interface, etc.).",
+                },
+                "repo_path": {
+                    "type": "string",
+                    "description": "Absolute repo root path.",
+                },
+                "exact": {
+                    "type": "boolean",
+                    "description": "If true, match exact name only. Default false (substring match).",
+                },
+            },
+            "required": ["symbol", "repo_path"],
+        },
+    },
+    {
+        "name": "verify_build",
+        "description": (
+            "Run lightweight verification checks (lint, type-check) on the repo before finishing. "
+            "Call this BEFORE finish_build to catch errors early. "
+            "If it returns failures, fix them and call verify_build again. "
+            "Do NOT call finish_build until verify_build passes or reports no tools detected."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_path": {
+                    "type": "string",
+                    "description": "Absolute path to the repo root.",
+                },
+            },
+            "required": ["repo_path"],
+        },
+    },
+    {
         "name": "finish_build",
         "description": (
-            "Call this when all code changes are complete. "
+            "Call this when all code changes are complete AND verify_build has passed. "
             "Provide a summary of every file you created or modified."
         ),
         "input_schema": {
