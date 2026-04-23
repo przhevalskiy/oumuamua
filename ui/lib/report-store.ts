@@ -4,10 +4,11 @@ export type SavedReport = {
   answer: string;
   createdAt: string; // ISO
   projectId?: string;
-  summary?: string; // final swarm report summary, saved on completion
+  summary?: string;        // final swarm report summary, saved on completion
+  lastMessageContent?: string; // last significant message — used for HITL status detection
 };
 
-const KEY = 'keystone_reports';
+const KEY = 'gantry_reports';
 const MAX = 50;
 
 function load(): SavedReport[] {
@@ -48,4 +49,8 @@ export function getReportsByProject(projectId: string): SavedReport[] {
 
 export function deleteReport(taskId: string) {
   save(load().filter(r => r.taskId !== taskId));
+}
+
+export function deleteReportsByProject(projectId: string) {
+  save(load().filter(r => r.projectId !== projectId));
 }

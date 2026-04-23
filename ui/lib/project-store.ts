@@ -12,6 +12,6 @@ export const useProjectStore = create<ProjectStore>()(
       activeProjectId: null,
       setActiveProjectId: (id) => set({ activeProjectId: id }),
     }),
-    { name: 'keystone_active_project' }
+    { name: 'gantry_active_project' }
   )
 );

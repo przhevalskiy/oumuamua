@@ -1,18 +1,25 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type AgentModel = 'claude-sonnet-4-6' | 'claude-haiku-4-5' | 'default';
+export type AgentModel = 'claude-sonnet-4-6' | 'claude-haiku-4-5' | 'mistral-large-latest' | 'mistral-small-latest' | 'default';
 
 export type AgentConfig = {
   swarmBranchPrefix: string;
   swarmMaxHealCycles: number;
   swarmMaxParallelTracks: number;
+  // Model overrides — note: backend auto-routes by tier (Haiku for tier 0/1, Sonnet for tier 2+).
+  // These are only used when tierOverride is set to an explicit tier value.
   modelArchitect: AgentModel;
   modelBuilder: AgentModel;
   modelInspector: AgentModel;
   modelSecurity: AgentModel;
   modelDevOps: AgentModel;
+  // -1 = auto-classify (default). 0-3 = force a specific tier.
+  tierOverride: number;
   showAgentTagsInFeed: boolean;
+  // GitHub PAT — stored in localStorage, sent to the backend as a task param.
+  // Never sent to third parties. Used only for clone + push operations.
+  githubToken: string;
 };
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -24,7 +31,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
   modelInspector: 'default',
   modelSecurity: 'default',
   modelDevOps: 'default',
+  tierOverride: -1,
   showAgentTagsInFeed: false,
+  githubToken: '',
 };
 
 type AgentConfigStore = {
@@ -47,6 +56,6 @@ export const useAgentConfigStore = create<AgentConfigStore>()(
         );
       },
     }),
-    { name: 'keystone_agent_config' }
+    { name: 'gantry_agent_config' }
   )
 );

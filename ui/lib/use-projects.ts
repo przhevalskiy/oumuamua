@@ -32,12 +32,12 @@ export function useActiveProject() {
 
   const activeProject = projects.find(p => p.id === activeProjectId) ?? null;
 
-  const selectProject = useCallback((id: string) => {
+  const selectProject = useCallback((id: string | null) => {
     setActiveProjectId(id);
   }, [setActiveProjectId]);
 
-  const addProject = useCallback(async (name: string): Promise<Project> => {
-    const project = await createProject(name);
+  const addProject = useCallback(async (name: string, github_url?: string): Promise<Project> => {
+    const project = await createProject(name, github_url);
     await refresh();
     setActiveProjectId(project.id);
     return project;
