@@ -1,8 +1,35 @@
 # Gantry
 
-**A durable, parallel software engineering factory powered by a crew of specialised agents.**
+**Submit a task. Walk away. Come back to a pull request.**
 
-You describe what to build. Gantry plans it, writes it, tests it, secures it, and opens a pull request — surviving crashes, network drops, and multi-day builds without losing a step.
+Gantry is an async, autonomous software engineering agent for engineering teams who want to ship faster without babysitting an AI session. You describe what needs to be built. Gantry plans it, writes it in parallel across multiple agents, tests it, and opens a PR on your GitHub repo — while you do something else.
+
+---
+
+## What this is not
+
+**Not a pair programmer.** Gantry is not Cursor, GitHub Copilot, or Claude Code. It does not sit next to you in an editor, suggest completions, or answer questions about your code. Those tools are for interactive, back-and-forth collaboration. Gantry is for when you want to assign a task and move on.
+
+**Not a chat interface.** There is no conversation. You give Gantry a goal, it executes a full pipeline, and it delivers a PR. The only time it pauses for you is at explicit approval checkpoints on complex tasks.
+
+**Not a wrapper around an LLM.** The core value is the orchestration — a multi-agent pipeline with parallel execution, a self-healing loop, and durable state that survives crashes. The LLM is a component, not the product.
+
+---
+
+## Who it is for
+
+Engineering teams and individual developers with a backlog of well-defined tasks they keep deprioritising. Features that are clear enough to implement but take 3–6 hours of mechanical execution. The kind of work you know exactly how to do but haven't had time to start.
+
+Tasks Gantry handles well:
+- Adding a feature that touches multiple files across the stack
+- Scaffolding a new service or module from a spec
+- Applying a consistent change across many files (logging, tracing, auth guards)
+- Greenfield projects where the structure is clear and the execution is the bottleneck
+
+Tasks Gantry does not handle well:
+- Exploratory debugging ("why is this test failing?")
+- Architecture decisions that require human judgment mid-task
+- Tasks with ambiguous requirements that need iteration to discover
 
 ---
 
@@ -226,11 +253,16 @@ The token is stored in your browser only. It's passed to the worker as a task pa
 
 ## Memory
 
-Gantry maintains two persistent memory layers per repo under `.gantry/`:
+Gantry maintains persistent memory across builds so the system gets smarter over time.
 
 **Facts store** (`.gantry/memory/facts.json`) — key/value facts written by any agent during a build. Architects store tech stack decisions. Builders store known failure patterns. Facts with `arch.` or `pm.` prefixes expire after 90 days.
 
-**Episodic memory** (`.gantry/memory/episodes.jsonl`) — one record per completed build. Architects search past episodes before planning to avoid repeating failed approaches.
+**Episodic memory** — one record per completed build, written at two levels:
+
+- **Per-repo** (`.gantry/memory/episodes.jsonl`) — history for this specific repository
+- **Platform-wide** (`~/.gantry/episodes.jsonl`) — history across every repo ever built on this machine
+
+Before planning, the Architect searches the platform-wide store. A new React project gets the learning from every prior React build you've run — what track decompositions worked, what failed, what quality scores were achieved. Same-repo episodes are boosted in ranking so local context still wins ties. The more tasks run, the better every future Architect gets.
 
 ---
 
