@@ -2,17 +2,19 @@
 
 **Submit a task. Walk away. Come back to a pull request.**
 
-Gantry is an autonomous software engineering pipeline for engineering teams who want to ship faster without babysitting an AI session. You describe what needs to be built. Gantry plans it, writes it in parallel across a crew of specialised agents, tests it, and opens a PR on your GitHub repo — while you do something else.
+Gantry is a software engineering factory. You describe what needs to be built. A crew of specialised agents plans it, writes it in parallel across independent tracks, tests it, heals failures automatically, and opens a PR on your GitHub repo — while you do something else.
+
+Submit 1 task or 1000. Each is an independent pipeline. An engineering team can put an entire sprint's backlog in on Monday morning and spend the week reviewing PRs instead of writing boilerplate.
 
 ---
 
 ## What this is not
 
-**Not a pair programmer.** Gantry is not Cursor, GitHub Copilot, or Claude Code. Those tools sit next to you in an editor — they suggest, explain, and wait for your next move. Gantry does not do that. There is no editor integration, no inline suggestion, no back-and-forth. You assign a task like you would to a team. It executes. You review the PR.
+**Not a pair programmer.** Gantry is not Cursor, GitHub Copilot, or Claude Code. Those tools sit next to you in an editor — they suggest, explain, and wait for your next move. Gantry does not do that. There is no editor integration, no inline suggestion, no back-and-forth. You assign a task like you would to a team. The factory runs. You review the PR.
 
 **Not a chat interface.** There is no conversation. You give Gantry a goal, it runs a full engineering pipeline, and it delivers a branch with a pull request. The only time it stops and waits for you is at explicit approval checkpoints on complex tasks — reviewing the build plan before builders launch, or confirming a deployment. Otherwise it runs to completion without you.
 
-**Not a wrapper around an LLM.** A single LLM call does not build software. What does is the orchestration — parallel execution across independent tracks, a structured handoff between specialised roles, a self-healing loop that retries failures with concrete fix instructions, and durable state that survives crashes and restarts. The LLM is a component. The factory is the product.
+**Not a wrapper around an LLM.** A single LLM call does not build software. What does is the orchestration — parallel execution across independent tracks, structured handoffs between specialised roles, a self-healing loop that retries failures with concrete fix instructions, and durable state that survives crashes and restarts. The LLM is a component. The factory is the product.
 
 ---
 
@@ -22,13 +24,15 @@ Think of Gantry as a silicon construction crew — a non-contested engineering t
 
 Each role in the pipeline is a specialised agent with its own toolset, context window, and model. They do not share memory mid-build — they hand off structured artifacts. The Architect produces a plan. The Builders execute tracks from that plan simultaneously. The Inspector verifies and generates precise fix instructions. The crew does not need to be managed. It needs to be assigned.
 
-This is what makes Gantry different from a single AI doing everything sequentially. A construction project does not have one worker who designs the building, pours concrete, frames walls, runs electrical, and inspects the work. It has a crew with defined roles running in parallel, coordinated by a foreman. That is the model.
+A construction project does not have one worker who designs the building, pours concrete, frames walls, runs electrical, and inspects the work. It has a crew with defined roles running in parallel, coordinated by a foreman. That is the model.
+
+**At scale:** each task is an independent Temporal workflow with no shared state between runs. The only limits are worker capacity, LLM rate limits, and GitHub API throughput — all horizontally scalable. 1000 tasks in, 1000 PRs out.
 
 ---
 
 ## Who it is for
 
-Engineering teams and individual developers with a backlog of well-scoped tasks that keep getting deprioritised. Features that are clear enough to implement but take 4–8 hours of mechanical execution. The kind of work you know exactly how to do but haven't had time to start.
+Engineering teams with a backlog of well-scoped tasks that keep getting deprioritised. Features that are clear enough to implement but take 4–8 hours of mechanical execution. The kind of work your team knows exactly how to do but hasn't had time to start.
 
 **Gantry handles well:**
 - Features that touch multiple files across the stack (API + UI + tests + config)
