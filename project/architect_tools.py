@@ -72,33 +72,6 @@ ARCHITECT_TOOLS: list[dict] = [
         },
     },
     {
-        "name": "web_search",
-        "description": (
-            "Search the web for documentation, package versions, architecture patterns, or API references. "
-            "Use when you're uncertain about a library's API or want to verify an approach before planning."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query."},
-                "num_results": {"type": "integer", "description": "Number of results (default: 5, max: 10)."},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "fetch_url",
-        "description": "Fetch a documentation URL, README, or changelog and return its text. Use to read API docs or package changelogs.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "URL to fetch."},
-                "max_chars": {"type": "integer", "description": "Max characters to return (default: 8000)."},
-            },
-            "required": ["url"],
-        },
-    },
-    {
         "name": "memory_read",
         "description": (
             "Read facts stored by the PM or previous agents. "
@@ -205,7 +178,14 @@ ARCHITECT_TOOLS: list[dict] = [
                             "implementation_steps": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "Ordered steps for this track's Builder to execute.",
+                                "minItems": 1,
+                                "description": (
+                                    "Ordered steps for this track's Builder to execute. "
+                                    "REQUIRED — must contain at least one step. "
+                                    "Be specific: name the exact file, function, and change. "
+                                    "Example: 'In workflows/builder_agent.py, after each tool dispatch, "
+                                    "add log.info(tool_name=tool_name, turn=turn, success=not failed)'."
+                                ),
                             },
                             "key_files": {
                                 "type": "array",

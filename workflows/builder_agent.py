@@ -118,9 +118,10 @@ class BuilderAgent:
             except Exception:
                 pass  # malformed manifest — skip silently
 
-        steps_text = "\n".join(
-            f"  {i+1}. {s}" for i, s in enumerate(architect_plan.get("implementation_steps", []))
-        )
+        raw_steps = architect_plan.get("implementation_steps", [])
+        if not raw_steps:
+            raw_steps = [goal]  # fallback: treat the goal itself as the single step
+        steps_text = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(raw_steps))
         key_files = architect_plan.get("key_files", [])
         if key_files and isinstance(key_files[0], dict):
             key_files_text = "\n".join(
@@ -176,7 +177,11 @@ class BuilderAgent:
             f"Example: {repo_root}/src/App.tsx — NEVER just src/App.tsx.\n"
             "- Use read_file to read files. NEVER use run_command to cat or read files.\n"
             "- For package installation use install_packages — do NOT use run_command for installs.\n"
-            "- Use str_replace_editor (preferred) or patch_file for targeted edits; write_file for new files.\n"
+            "- Editing strategy: if your change touches ONE small location (< 10 lines), use str_replace_editor.\n"
+            "  If your change touches MULTIPLE locations in the same file, or the file is large (> 100 lines),\n"
+            "  read the full file first with read_file, then rewrite it entirely with write_file.\n"
+            "  NEVER attempt str_replace on the same file more than twice — switch to write_file instead.\n"
+            "- Use write_file for new files and for any widespread modification to an existing file.\n"
             "- Use query_index first to locate symbol definitions, then find_symbol if not indexed, then read_file.\n"
             "- Use search_files to locate files by name or content before editing.\n"
             "- Use web_search / fetch_url when uncertain about a library's API or an error message.\n"
@@ -186,16 +191,42 @@ class BuilderAgent:
             "- Call finish_build only after verify_build passes (or reports no tools detected)."
         )
 
-        from project.config import CLAUDE_SONNET_MODEL
+        from project.config import CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL
         _model = model or CLAUDE_SONNET_MODEL
         context: list[dict] = []
         edits: list[dict] = []
         verify_build_passed = False  # must be True before finish_build is accepted
+        consecutive_str_replace_failures = 0  # detect thrashing — switch to write_file after 2
+        last_read_file: str | None = None  # track the last file read for read-before-edit guard
+        last_action_was_read = False  # True if the immediately preceding turn was a read
+
+        def _active_model(turn: int, turns_left: int) -> str:
+            """
+            Hybrid model routing — Sonnet for reasoning turns, Haiku for mechanical execution.
+
+            Turn 0-1  : Sonnet — memory_read, initial repo scan, plan internalization
+            Turn 2-N-3: Haiku  — file reads, writes, str_replace (mechanical execution)
+            Turn N-2+ : Sonnet — verify_build analysis, finish_build decision
+
+            Rationale: Haiku is 12x cheaper and 3x faster than Sonnet for simple
+            file-write turns. The plan is already in context by turn 2, so Haiku
+            just needs to follow it. Sonnet is reserved for turns that require
+            genuine reasoning: understanding the repo at the start, and evaluating
+            build results at the end.
+            """
+            if _model != CLAUDE_SONNET_MODEL:
+                return _model  # respect explicit model override (e.g. Mistral)
+            if turn <= 1:
+                return CLAUDE_SONNET_MODEL   # planning / context loading
+            if turns_left <= 2:
+                return CLAUDE_SONNET_MODEL   # verify_build + finish_build
+            return CLAUDE_HAIKU_MODEL        # mechanical execution turns
 
         for turn in range(MAX_BUILDER_TURNS):
+            turns_left = MAX_BUILDER_TURNS - turn - 1
             raw = await workflow.execute_activity(
                 "plan_builder_step",
-                args=[task_prompt, context, _model],
+                args=[task_prompt, context, _active_model(turn, turns_left)],
                 **PLANNER_OPTIONS,
             )
             context = raw["context"]
@@ -259,6 +290,55 @@ class BuilderAgent:
                 }]
                 continue
 
+            # ── Read-before-edit guard ────────────────────────────────────────
+            # If the builder tries to str_replace or patch a file without having
+            # read it in the immediately preceding turn, auto-inject a read first.
+            # This mirrors how Kiro/Claude Code work and prevents stale-content errors.
+            edit_path = tool_input.get("path", "")
+            needs_read_guard = (
+                tool_name == "str_replace_editor"
+                and tool_input.get("command") == "str_replace"
+                and edit_path
+                and not last_action_was_read
+            ) or (
+                tool_name == "patch_file"
+                and edit_path
+                and not last_action_was_read
+            )
+
+            if needs_read_guard:
+                log.info("read_before_edit_guard", tool=tool_name, path=edit_path)
+                try:
+                    read_result = await workflow.execute_activity(
+                        "swarm_read_file", args=[edit_path], **IO_OPTIONS
+                    )
+                    # Inject the read as a synthetic tool exchange so the LLM sees
+                    # the current file content before its str_replace is executed.
+                    synthetic_id = f"auto-read-{tool_use_id}"
+                    context = context + [
+                        {
+                            "role": "assistant",
+                            "content": [{
+                                "type": "tool_use",
+                                "id": synthetic_id,
+                                "name": "str_replace_editor",
+                                "input": {"command": "view", "path": edit_path},
+                            }],
+                        },
+                        {
+                            "role": "user",
+                            "content": [{
+                                "type": "tool_result",
+                                "tool_use_id": synthetic_id,
+                                "content": str(read_result),
+                            }],
+                        },
+                    ]
+                    last_read_file = edit_path
+                    last_action_was_read = True
+                except Exception:
+                    pass  # guard failed — proceed anyway, the edit may still work
+
             await adk.messages.create(
                 task_id=parent_task_id,
                 content=TextContent(
@@ -275,6 +355,58 @@ class BuilderAgent:
 
             tool_result_str = str(tool_result)
             failed = tool_result_str.startswith("ERROR:")
+
+            # Update read-tracking state
+            if tool_name == "read_file" or (tool_name == "str_replace_editor" and tool_input.get("command") == "view"):
+                last_read_file = tool_input.get("path", "")
+                last_action_was_read = True
+            else:
+                last_action_was_read = False
+
+            # ── Emit trace record ─────────────────────────────────────────────
+            try:
+                input_summary = tool_input.get("path") or tool_input.get("command") or str(tool_input)[:120]
+                result_summary = tool_result_str[:200] if not failed else tool_result_str[:200]
+                usage = raw.get("usage", {})
+                await workflow.execute_activity(
+                    "trace_write",
+                    args=[
+                        repo_root,
+                        parent_task_id,
+                        tag,
+                        turn,
+                        tool_name,
+                        str(input_summary)[:200],
+                        result_summary,
+                        usage.get("input_tokens", 0),
+                        usage.get("output_tokens", 0),
+                        0,  # latency not available at workflow level
+                        "",
+                    ],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+            except Exception:
+                pass  # trace write is non-critical
+
+            # Detect str_replace thrashing — if it keeps failing, force write_file
+            if tool_name == "str_replace_editor" and tool_input.get("command") == "str_replace":
+                if failed:
+                    consecutive_str_replace_failures += 1
+                    if consecutive_str_replace_failures >= 2:
+                        target_path = tool_input.get("path", "the file")
+                        tool_result_str += (
+                            f"\n\n⚠ STOP: str_replace has failed {consecutive_str_replace_failures} times in a row. "
+                            f"Do NOT try str_replace again. Instead:\n"
+                            f"1. Call str_replace_editor with command='view' on '{target_path}' to get the full current content.\n"
+                            f"2. Use write_file to rewrite the entire file with ALL your changes at once.\n"
+                            f"This is the only way forward."
+                        )
+                else:
+                    consecutive_str_replace_failures = 0
+            elif not failed and tool_name in ("write_file", "patch_file"):
+                # Only reset on a successful write — read_file does NOT reset the counter
+                consecutive_str_replace_failures = 0
 
             # Track verify_build outcome to gate finish_build
             if tool_name == "verify_build" and not failed:
@@ -303,7 +435,6 @@ class BuilderAgent:
                     })
 
             # Warn early so the LLM wraps up before hitting the hard limit
-            turns_left = MAX_BUILDER_TURNS - turn - 1
             if turns_left == 3:
                 tool_result_str += (
                     "\n\n⚠ WARNING: 3 turns remaining. Call verify_build then finish_build NOW "

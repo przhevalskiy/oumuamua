@@ -145,24 +145,62 @@ class ArchitectAgent:
             "   - Each track should touch distinct, non-overlapping files.\n"
             "   - Use 1 track for simple tasks, 2-4 for larger ones.\n"
             "   - Example tracks: 'backend', 'frontend', 'tests', 'infra', 'docs'.\n"
-            "   - If a track imports symbols from another track, set depends_on=[other_track_label].\n"
-            "   - Tracks WITHOUT depends_on run SIMULTANEOUSLY. Tracks WITH depends_on wait for their dependencies.\n"
+            "   - WAVE RULES — critical for parallelism:\n"
+            "     * Only use depends_on when a track CANNOT START AT ALL without files from another track.\n"
+            "     * The ONLY valid reason for depends_on is: 'I need to import a file that doesn't exist yet.'\n"
+            "     * Shared config files (package.json, tsconfig, tailwind.config) are NOT a reason for depends_on\n"
+            "       — builders can write config files independently.\n"
+            "     * For greenfield apps: ONLY a 'scaffold' track (package.json, tsconfig, vite.config) should\n"
+            "       be wave 1. ALL other tracks (data-layer, components, pages, hooks, tests) run in wave 2\n"
+            "       SIMULTANEOUSLY — they do NOT depend on each other.\n"
+            "     * NEVER create more than 2 waves. If you find yourself making wave 3 or 4, merge those\n"
+            "       tracks into wave 2 instead.\n"
+            "     * Tracks WITHOUT depends_on run SIMULTANEOUSLY. Tracks WITH depends_on wait.\n"
+            "     * WRONG: pages depends_on components depends_on data-layer (3 waves)\n"
+            "     * RIGHT: scaffold (wave 1), then data-layer + components + pages all in wave 2\n"
+            "   - Write implementation_steps that specify HOW, not just WHAT. Include the edit strategy:\n"
+            "     * For changes touching ONE small location: 'In <file>, str_replace <function> to add X'\n"
+            "     * For changes touching MULTIPLE locations or large files (>100 lines):\n"
+            "       'Read <file> in full, then rewrite it with write_file adding X at each Y'\n"
+            "     Bad step: 'Add logging to builder_agent.py'\n"
+            "     Good step: 'Read workflows/builder_agent.py in full, then rewrite it with write_file,\n"
+            "       adding log.info(tool_name=tool_name, turn=turn, success=not failed) after each\n"
+            "       tool dispatch in the main loop'\n"
             f"6. Call report_plan with repo_root='{repo_path}' and the tracks array when ready.\n\n"
             "Additional tools available:\n"
             "- query_index: look up symbol definitions by name (faster than search_files)\n"
             "- search_files: find files by glob or content regex instead of listing directories\n"
-            "- web_search / fetch_url: look up unfamiliar libraries, APIs, or patterns\n"
             "- check_secrets: verify required env vars are present before planning\n"
             f"- memory_read: read PM notes and prior decisions. Always use repo_path='{repo_path}'.\n"
             f"- memory_write: store key findings for Builder agents. Always use repo_path='{repo_path}'."
         )
 
         context: list[dict] = []
+        files_read: set[str] = set()  # track files already read to detect re-read loops
+        exploration_turns = 0  # count non-plan turns to enforce early commit on greenfield
+
+        from project.config import CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL
+
+        def _architect_model(turn: int, tool_name: str | None = None) -> str:
+            """
+            Hybrid routing for the Architect.
+            - Exploration turns (list, read, search, memory): Haiku — fast and cheap
+            - Planning turn (report_plan decision): Sonnet — needs strong reasoning
+            - First turn: Sonnet — sets the overall strategy
+            """
+            if turn == 0:
+                return CLAUDE_SONNET_MODEL  # first turn: understand the goal fully
+            if tool_name == "report_plan":
+                return CLAUDE_SONNET_MODEL  # final plan: needs Sonnet quality
+            # After enough exploration, switch to Sonnet to force a good plan
+            if exploration_turns >= 5:
+                return CLAUDE_SONNET_MODEL
+            return CLAUDE_HAIKU_MODEL  # exploration: Haiku is fast enough
 
         for turn in range(MAX_ARCHITECT_TURNS):
             raw = await workflow.execute_activity(
                 "plan_architect_step",
-                args=[task_prompt, context],
+                args=[task_prompt, context, _architect_model(turn)],
                 **PLANNER_OPTIONS,
             )
             context = raw["context"]
@@ -186,19 +224,11 @@ class ArchitectAgent:
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
                             "content": (
-                                "ERROR: implementation_steps array is empty. "
-                                "You MUST call report_plan again with non-empty implementation_steps.\n\n"
-                                "First call memory_read(repo_path='" + repo_path + "') to get tech stack.\n\n"
-                                "Then call report_plan with steps like this example:\n"
-                                '{"repo_root": "' + repo_path + '", '
-                                '"tech_stack": ["Python", "aiohttp", "BeautifulSoup"], '
-                                '"tracks": [{"label": "main", "implementation_steps": ['
-                                '"Create requirements.txt with aiohttp beautifulsoup4 lxml", '
-                                '"Create scraper.py with async fetch and retry logic", '
-                                '"Create parser.py with HTML extraction functions", '
-                                '"Create main.py with CLI entry point"'
-                                ']}]}\n\n'
-                                "Replace the example steps with steps specific to the goal: " + plan_data.get("notes", goal)[:200]
+                                "ERROR: implementation_steps is empty. "
+                                "Call report_plan again RIGHT NOW with concrete steps. "
+                                "Do NOT read more files. Write specific steps like: "
+                                "'In <file>, add <exact change> at <location>'. "
+                                f"Goal: {goal[:300]}"
                             ),
                         }],
                     }]
@@ -260,6 +290,20 @@ class ArchitectAgent:
             tool_use_id = raw["tool_use_id"]
             tool_input = raw["tool_input"]
 
+            # Turn warning — force report_plan when budget is nearly exhausted
+            turns_left = MAX_ARCHITECT_TURNS - turn
+            if turns_left <= 4 and raw["type"] == "tool":
+                context = context + [{
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": tool_use_id,
+                                 "content": (
+                                     f"⚠ WARNING: {turns_left} turns remaining. "
+                                     "Stop exploring. Call report_plan NOW with your best plan. "
+                                     "You have enough context — commit to a plan immediately."
+                                 )}],
+                }]
+                continue
+
             if tool_name not in ARCHITECT_VALID_TOOL_NAMES:
                 context = context + [{
                     "role": "user",
@@ -267,6 +311,28 @@ class ArchitectAgent:
                                  "content": f"Unknown tool '{tool_name}'."}],
                 }]
                 continue
+
+            # Count exploration turns and nudge toward planning after threshold
+            exploration_turns += 1
+            if exploration_turns == 4:
+                # Inject a soft nudge — don't block, just remind
+                pass  # nudge is handled via tool_result suffix below
+
+            # Re-read guard — if the same file has been read before, block and push to plan
+            if tool_name == "read_file":
+                file_path = tool_input.get("path", "")
+                if file_path in files_read:
+                    context = context + [{
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tool_use_id,
+                                     "content": (
+                                         f"You already read '{file_path}'. "
+                                         "Do not re-read the same file. "
+                                         "You have enough context — call report_plan now."
+                                     )}],
+                    }]
+                    continue
+                files_read.add(file_path)
 
             tool_result = await self._dispatch(tool_name, tool_input)
 
@@ -278,9 +344,18 @@ class ArchitectAgent:
                 ),
             )
 
+            tool_result_str = str(tool_result)
+
+            # After 4 exploration turns, append a commit nudge to every result
+            if exploration_turns >= 4:
+                tool_result_str += (
+                    "\n\n⚡ You have explored enough. Call report_plan NOW with your best plan. "
+                    "Do not read more files or search further — commit to a decomposition."
+                )
+
             context = context + [{
                 "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": str(tool_result)}],
+                "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": tool_result_str}],
             }]
 
         log.warning("architect_max_turns")
@@ -320,18 +395,6 @@ class ArchitectAgent:
             return await workflow.execute_activity(
                 "swarm_check_secrets",
                 args=[tool_input.get("names", [])],
-                **IO_OPTIONS,
-            )
-        if tool_name == "web_search":
-            return await workflow.execute_activity(
-                "swarm_web_search",
-                args=[tool_input.get("query", ""), tool_input.get("num_results", 5)],
-                **IO_OPTIONS,
-            )
-        if tool_name == "fetch_url":
-            return await workflow.execute_activity(
-                "swarm_fetch_url",
-                args=[tool_input.get("url", ""), tool_input.get("max_chars", 8000)],
                 **IO_OPTIONS,
             )
         if tool_name == "memory_write":

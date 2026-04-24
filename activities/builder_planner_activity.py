@@ -8,7 +8,7 @@ import json
 from temporalio import activity
 
 from project.config import CLAUDE_SONNET_MODEL, CLAUDE_HAIKU_MODEL
-from project.planner import next_step, PlannerStep, FinalAnswer, PlannerError
+from project.planner import next_step, PlannerStep, FinalAnswer, PlannerError, get_last_usage
 from project.builder_tools import BUILDER_TOOLS
 
 _BUILDER_SYSTEM = (
@@ -18,7 +18,14 @@ _BUILDER_SYSTEM = (
     "1. NEVER use run_command to read files. Use read_file instead.\n"
     "2. NEVER run npm install, yarn install, pip install, or any build command (vite build, tsc, etc.). "
     "These are handled outside the swarm. Your job is to write source files only.\n"
-    "3. Use read_file before modifying any existing file.\n"
+    "3. READ IMMEDIATELY BEFORE EVERY EDIT — this is mandatory:\n"
+    "   - Before EVERY str_replace_editor(str_replace) call, you MUST call str_replace_editor(view) "
+    "on that exact file in the immediately preceding turn.\n"
+    "   - Before EVERY patch_file call, you MUST call read_file on that file in the immediately preceding turn.\n"
+    "   - Before EVERY write_file on an EXISTING file, you MUST call read_file first.\n"
+    "   - Only write_file on a brand-new file (one that does not yet exist) may skip the read step.\n"
+    "   - Rationale: files may have changed since you last read them. Editing stale content causes "
+    "str_replace mismatches and broken patches. Always read, then immediately edit.\n"
     "4. Use patch_file for targeted edits, write_file only for new files or full rewrites.\n"
     "5. run_command is ONLY for: mkdir, touch, or other filesystem setup — never for installs or builds.\n"
     "6. Follow the implementation_steps from the plan in order.\n"
@@ -49,7 +56,7 @@ async def plan_builder_step(
         return {"type": "error", "message": str(e), "context": context}
 
     if isinstance(result, FinalAnswer):
-        return {"type": "final", "answer": result.answer, "context": new_context}
+        return {"type": "final", "answer": result.answer, "context": new_context, "usage": get_last_usage()}
 
     if isinstance(result, PlannerStep):
         if result.tool_name == "finish_build":
@@ -58,6 +65,7 @@ async def plan_builder_step(
                 "build_data": result.tool_input,
                 "tool_use_id": result.tool_use_id,
                 "context": new_context,
+                "usage": get_last_usage(),
             }
         return {
             "type": "step",
@@ -65,6 +73,7 @@ async def plan_builder_step(
             "tool_use_id": result.tool_use_id,
             "tool_input": result.tool_input,
             "context": new_context,
+            "usage": get_last_usage(),
         }
 
-    return {"type": "error", "message": "Unknown planner result", "context": new_context}
+    return {"type": "error", "message": "Unknown planner result", "context": new_context, "usage": {}}
