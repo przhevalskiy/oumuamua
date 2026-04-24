@@ -10,7 +10,9 @@ Submit 1 task or 1000. Each is an independent pipeline. An engineering team can 
 
 ## What this is not
 
-**Not a pair programmer.** Gantry is not Cursor, GitHub Copilot, or Claude Code. Those tools sit next to you in an editor — they suggest, explain, and wait for your next move. Gantry does not do that. There is no editor integration, no inline suggestion, no back-and-forth. You assign a task like you would to a team. The factory runs. You review the PR.
+**Not a pair programmer.** Gantry is not Cursor, GitHub Copilot, or Claude Code. Those tools are synchronous — they require an engineer present, guiding, correcting, prompting the next step. The bottleneck is human attention. Gantry is asynchronous. The pipeline runs without you. You write the goal. You review the PR. Everything in between is the factory's problem.
+
+Claude Code is for an engineer who wants to move faster right now, in the flow of their current work. Gantry is for a tech lead who has 20 tickets in the backlog and wants 15 of them drafted by tomorrow without assigning them to anyone. One is a power tool. The other is a factory floor. Nobody says a factory is a slower version of a craftsman's workshop. They are not competing. One makes one chair at a time, beautifully, with full attention. The other makes a thousand chairs while the craftsman sleeps.
 
 **Not a chat interface.** There is no conversation. You give Gantry a goal, it runs a full engineering pipeline, and it delivers a branch with a pull request. The only time it stops and waits for you is at explicit approval checkpoints on complex tasks — reviewing the build plan before builders launch, or confirming a deployment. Otherwise it runs to completion without you.
 
