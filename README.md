@@ -2,34 +2,45 @@
 
 **Submit a task. Walk away. Come back to a pull request.**
 
-Gantry is an async, autonomous software engineering agent for engineering teams who want to ship faster without babysitting an AI session. You describe what needs to be built. Gantry plans it, writes it in parallel across multiple agents, tests it, and opens a PR on your GitHub repo — while you do something else.
+Gantry is an autonomous software engineering pipeline for engineering teams who want to ship faster without babysitting an AI session. You describe what needs to be built. Gantry plans it, writes it in parallel across a crew of specialised agents, tests it, and opens a PR on your GitHub repo — while you do something else.
 
 ---
 
 ## What this is not
 
-**Not a pair programmer.** Gantry is not Cursor, GitHub Copilot, or Claude Code. It does not sit next to you in an editor, suggest completions, or answer questions about your code. Those tools are for interactive, back-and-forth collaboration. Gantry is for when you want to assign a task and move on.
+**Not a pair programmer.** Gantry is not Cursor, GitHub Copilot, or Claude Code. Those tools sit next to you in an editor — they suggest, explain, and wait for your next move. Gantry does not do that. There is no editor integration, no inline suggestion, no back-and-forth. You assign a task like you would to a team. It executes. You review the PR.
 
-**Not a chat interface.** There is no conversation. You give Gantry a goal, it executes a full pipeline, and it delivers a PR. The only time it pauses for you is at explicit approval checkpoints on complex tasks.
+**Not a chat interface.** There is no conversation. You give Gantry a goal, it runs a full engineering pipeline, and it delivers a branch with a pull request. The only time it stops and waits for you is at explicit approval checkpoints on complex tasks — reviewing the build plan before builders launch, or confirming a deployment. Otherwise it runs to completion without you.
 
-**Not a wrapper around an LLM.** The core value is the orchestration — a multi-agent pipeline with parallel execution, a self-healing loop, and durable state that survives crashes. The LLM is a component, not the product.
+**Not a wrapper around an LLM.** A single LLM call does not build software. What does is the orchestration — parallel execution across independent tracks, a structured handoff between specialised roles, a self-healing loop that retries failures with concrete fix instructions, and durable state that survives crashes and restarts. The LLM is a component. The factory is the product.
+
+---
+
+## The construction crew
+
+Think of Gantry as a silicon construction crew — a non-contested engineering team that works in parallel, never argues about scope, and hands you a PR when the job is done.
+
+Each role in the pipeline is a specialised agent with its own toolset, context window, and model. They do not share memory mid-build — they hand off structured artifacts. The Architect produces a plan. The Builders execute tracks from that plan simultaneously. The Inspector verifies and generates precise fix instructions. The crew does not need to be managed. It needs to be assigned.
+
+This is what makes Gantry different from a single AI doing everything sequentially. A construction project does not have one worker who designs the building, pours concrete, frames walls, runs electrical, and inspects the work. It has a crew with defined roles running in parallel, coordinated by a foreman. That is the model.
 
 ---
 
 ## Who it is for
 
-Engineering teams and individual developers with a backlog of well-defined tasks they keep deprioritising. Features that are clear enough to implement but take 3–6 hours of mechanical execution. The kind of work you know exactly how to do but haven't had time to start.
+Engineering teams and individual developers with a backlog of well-scoped tasks that keep getting deprioritised. Features that are clear enough to implement but take 4–8 hours of mechanical execution. The kind of work you know exactly how to do but haven't had time to start.
 
-Tasks Gantry handles well:
-- Adding a feature that touches multiple files across the stack
-- Scaffolding a new service or module from a spec
-- Applying a consistent change across many files (logging, tracing, auth guards)
-- Greenfield projects where the structure is clear and the execution is the bottleneck
+**Gantry handles well:**
+- Features that touch multiple files across the stack (API + UI + tests + config)
+- Scaffolding a new service, module, or integration from a spec
+- Applying a consistent change across many files — logging, tracing, auth guards, error handling
+- Greenfield projects where the architecture is clear and execution is the bottleneck
 
-Tasks Gantry does not handle well:
-- Exploratory debugging ("why is this test failing?")
+**Gantry does not handle well:**
+- Exploratory debugging ("why is this flaky test failing in CI?")
 - Architecture decisions that require human judgment mid-task
 - Tasks with ambiguous requirements that need iteration to discover
+- Anything that requires a conversation to define
 
 ---
 
