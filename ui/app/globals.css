@@ -42,7 +42,6 @@ body {
   color: var(--text-primary);
 }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d0d0d0; border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: #b8b8b8; }
+/* Hide scrollbars everywhere — content still scrolls, no visible track */
+::-webkit-scrollbar { width: 0; height: 0; background: transparent; }
+* { scrollbar-width: none; }
