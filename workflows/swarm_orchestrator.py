@@ -205,16 +205,16 @@ class SwarmOrchestrator(BaseWorkflow):
         repo_path = params.params.get("repo_path", ".") if params.params else "."
         branch_prefix = params.params.get("branch_prefix", "swarm") if params.params else "swarm"
 
-        # ── GitHub clone step ─────────────────────────────────────────────────
-        # If the caller passes a github_url, clone the repo before doing anything else.
+        # ── GitHub clone / init step ──────────────────────────────────────────
         # The per-task github_token takes precedence over the global GH_TOKEN env var.
         github_url: str = params.params.get("github_url", "") if params.params else ""
         github_token: str = params.params.get("github_token", "") if params.params else ""
+        project_id: str = params.params.get("project_id", "") if params.params else ""
+
+        from project.config import GH_TOKEN
+        effective_token = github_token or GH_TOKEN
 
         if github_url:
-            from project.config import GH_TOKEN
-            effective_token = github_token or GH_TOKEN
-
             await adk.messages.create(
                 task_id=task_id,
                 content=TextContent(
@@ -260,6 +260,75 @@ class SwarmOrchestrator(BaseWorkflow):
                     content=f"[Foreman] ✓ Repository ready at {repo_path}",
                 ),
             )
+
+        else:
+            # Local project — ensure git is initialised so DevOps can commit + push.
+            # The empty commit gives git a HEAD so branch creation works before any files exist.
+            await workflow.execute_activity(
+                "swarm_run_command",
+                args=[
+                    (
+                        'git init && '
+                        'git config user.email "swarm@gantry.local" && '
+                        'git config user.name "Gantry Swarm" && '
+                        'git commit --allow-empty -m "chore: initialise repository"'
+                    ),
+                    repo_path,
+                ],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+
+            # Auto-create a GitHub repo when a PAT and project_id are available
+            if effective_token and project_id:
+                project_name = Path(repo_path).name
+                await adk.messages.create(
+                    task_id=task_id,
+                    content=TextContent(
+                        author="agent",
+                        content=f"[Foreman] Creating GitHub repository '{project_name}'...",
+                    ),
+                )
+                create_json: str = await workflow.execute_activity(
+                    "swarm_github_create_repo",
+                    args=[project_name, effective_token, True],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                try:
+                    create_result = json.loads(create_json)
+                except Exception:
+                    create_result = {"ok": False, "message": create_json}
+
+                if create_result.get("ok"):
+                    github_url = create_result["github_url"]
+                    await workflow.execute_activity(
+                        "swarm_git_configure_remote",
+                        args=[repo_path, effective_token, github_url],
+                        start_to_close_timeout=timedelta(seconds=15),
+                        retry_policy=RetryPolicy(maximum_attempts=2),
+                    )
+                    await workflow.execute_activity(
+                        "swarm_update_project_registry",
+                        args=[project_id, github_url],
+                        start_to_close_timeout=timedelta(seconds=10),
+                        retry_policy=RetryPolicy(maximum_attempts=2),
+                    )
+                    await adk.messages.create(
+                        task_id=task_id,
+                        content=TextContent(
+                            author="agent",
+                            content=f"[Foreman] ✓ GitHub repo created: {github_url}",
+                        ),
+                    )
+                else:
+                    await adk.messages.create(
+                        task_id=task_id,
+                        content=TextContent(
+                            author="agent",
+                            content=f"[Foreman] ⚠ Could not create GitHub repo: {create_result.get('message', '')} — continuing with local build.",
+                        ),
+                    )
 
         # Classify complexity tier — LLM-based for accuracy, regex fallback on failure.
         # Runs as an activity so it's durable and doesn't block the workflow thread.
@@ -492,6 +561,30 @@ class SwarmOrchestrator(BaseWorkflow):
 
         tracks = _extract_tracks(architect_plan, max_parallel_tracks=max_parallel_tracks)
         stack = ", ".join(architect_plan.get("tech_stack", [])[:4]) or "unknown stack"
+
+        # ── Fix 4: Plan validation — sanitize before launching any builders ────
+        # Strip empty/whitespace steps; drop tracks left with zero valid steps.
+        sanitized: list[dict] = []
+        for t in tracks:
+            clean = [s for s in t.get("implementation_steps", []) if isinstance(s, str) and s.strip()]
+            if clean:
+                sanitized.append({**t, "implementation_steps": clean})
+            else:
+                log.warning("architect_track_dropped_empty_steps", label=t.get("label", "?"))
+        if len(sanitized) < len(tracks):
+            dropped_labels = [t.get("label", "?") for t in tracks if t not in sanitized]
+            await adk.messages.create(
+                task_id=task_id,
+                content=TextContent(
+                    author="agent",
+                    content=(
+                        f"[Foreman] ⚠ {len(tracks) - len(sanitized)} track(s) dropped — "
+                        f"no valid steps: {', '.join(dropped_labels)}. Re-using remaining tracks."
+                    ),
+                ),
+            )
+            tracks = sanitized
+
         total_steps = sum(len(t.get("implementation_steps", [])) for t in tracks)
         log.info("architect_complete", tracks=len(tracks), total_steps=total_steps)
 
@@ -501,6 +594,33 @@ class SwarmOrchestrator(BaseWorkflow):
             log.warning("architect_empty_plan_fallback", tracks=len(tracks))
             tracks = [{"label": "main", "implementation_steps": [goal], "key_files": []}]
             total_steps = 1
+
+        # Guard: if a single track has more than 25 steps, the builder will hit the
+        # turn limit before finishing. Split oversized tracks into chunks of 20 steps.
+        MAX_STEPS_PER_TRACK = 25
+        split_tracks: list[dict] = []
+        for track in tracks:
+            steps = track.get("implementation_steps", [])
+            if len(steps) <= MAX_STEPS_PER_TRACK:
+                split_tracks.append(track)
+            else:
+                # Split into sub-tracks of MAX_STEPS_PER_TRACK steps each
+                label = track.get("label", "main")
+                key_files = track.get("key_files", [])
+                for chunk_idx, chunk_start in enumerate(range(0, len(steps), MAX_STEPS_PER_TRACK)):
+                    chunk = steps[chunk_start:chunk_start + MAX_STEPS_PER_TRACK]
+                    split_tracks.append({
+                        **track,
+                        "label": f"{label}-{chunk_idx + 1}" if chunk_idx > 0 else label,
+                        "implementation_steps": chunk,
+                        "key_files": key_files,
+                        # Each chunk after the first depends on the previous
+                        "depends_on": [f"{label}-{chunk_idx}"] if chunk_idx > 0 else track.get("depends_on", []),
+                    })
+                log.warning("track_split_oversized", label=label, original_steps=len(steps), chunks=chunk_idx + 1)
+        if len(split_tracks) != len(tracks):
+            tracks = split_tracks
+            total_steps = sum(len(t.get("implementation_steps", [])) for t in tracks)
 
         await adk.messages.create(
             task_id=task_id,
@@ -634,6 +754,22 @@ class SwarmOrchestrator(BaseWorkflow):
             all_builder_jsons: list[str] = []
 
             for wave_idx, wave_tracks in enumerate(track_waves):
+                # Fix 6: warn explicitly when a wave has more tracks than the parallel limit.
+                # Excess tracks are dropped here — surface it rather than silently losing work.
+                if len(wave_tracks) > max_parallel_tracks:
+                    dropped = [t.get("label", "?") for t in wave_tracks[max_parallel_tracks:]]
+                    log.warning("wave_tracks_overflow", wave=wave_idx, dropped=dropped, cap=max_parallel_tracks)
+                    await adk.messages.create(
+                        task_id=task_id,
+                        content=TextContent(
+                            author="agent",
+                            content=(
+                                f"[Foreman] ⚠ Wave {wave_idx + 1} has {len(wave_tracks)} tracks but parallel "
+                                f"limit is {max_parallel_tracks}. Dropping: {', '.join(dropped)}. "
+                                "Increase max_parallel_tracks in Settings to run all tracks."
+                            ),
+                        ),
+                    )
                 wave_tracks_capped = wave_tracks[:max_parallel_tracks]
                 wave_label = f"wave {wave_idx + 1}/{len(track_waves)}"
                 if len(track_waves) > 1:
@@ -872,14 +1008,20 @@ class SwarmOrchestrator(BaseWorkflow):
                 inspector_report = {"passed": False, "summary": inspector_json, "heal_instructions": []}
 
             if inspector_report.get("passed"):
-                log.info("inspector_passed", cycle=cycle)
+                log.info("inspector_passed", cycle=cycle, tests_skipped=inspector_report.get("tests_skipped", False))
+                inspector_summary = inspector_report.get("summary", "all checks passed")
                 await adk.messages.create(
                     task_id=task_id,
                     content=TextContent(
                         author="agent",
-                        content=f"[Inspector] ✓ done — {inspector_report.get('summary', 'all checks passed')}",
+                        content=f"[Inspector] ✓ done — {inspector_summary}",
                     ),
                 )
+                # Propagate skipped-tests warning into the build summary so DevOps
+                # includes it in the PR description — reviewers need to know.
+                if inspector_report.get("tests_skipped"):
+                    existing = build_result.get("summary", "")
+                    build_result["summary"] = (existing + f"\n\n{inspector_summary}").strip()
                 break
 
             # Merge structured heal_items (precise) with free-text heal_instructions
