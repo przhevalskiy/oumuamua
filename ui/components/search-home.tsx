@@ -291,6 +291,7 @@ export function SearchHome() {
       query: fullQuery,
       extraParams: {
         repo_path: project.repo_path,
+        project_id: project.id,
         branch_prefix: swarmConfig.swarmBranchPrefix || 'swarm',
         max_heal_cycles: swarmConfig.swarmMaxHealCycles,
         ...extraTier,
