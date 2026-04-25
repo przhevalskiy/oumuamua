@@ -60,6 +60,10 @@ PM → Architect → Builders (parallel) → Inspector → Security → DevOps
 
 Each stage is a separate agent with a focused toolset. The Architect decomposes the goal into independent tracks. Multiple Builder agents write code simultaneously. The Inspector runs tests and lint, triggering self-healing cycles if anything fails. Security scans for secrets and CVEs. DevOps branches, commits, pushes, and opens a PR.
 
+On Standard and Full Crew tiers, the pipeline pauses at key decisions — build plan review before builders launch, deployment approval before the PR is opened — and waits for your explicit sign-off via an inline approval card in the UI. Approve, reject, or enable auto-approve to let it run unattended.
+
+If you point Gantry at a local directory that has no GitHub remote, it creates the GitHub repo automatically before the first push.
+
 The whole pipeline is a [Temporal](https://temporal.io) workflow. Close your laptop mid-build — it continues when the worker comes back.
 
 ---
@@ -72,7 +76,7 @@ The whole pipeline is a [Temporal](https://temporal.io) workflow. Close your lap
 
 **Code-aware.** After each build, a symbol index maps every function, class, and type to its file and line number. Agents query the index instead of reading files blind. Builders use it to locate definitions before editing. The Architect uses it to plan on re-runs.
 
-**GitHub-native.** Connect a GitHub repo by URL. Gantry clones it, builds on it, and pushes a branch with a PR. Works with public and private repos via a Personal Access Token.
+**GitHub-native.** Connect a GitHub repo by URL, or point at a local directory and Gantry creates the remote repo for you. Builds on the repo and pushes a branch with a PR. Works with public and private repos via a Personal Access Token.
 
 **Durable.** Every agent is a Temporal child workflow. Every file write, LLM call, and shell command is a retryable activity. Crashes replay from the last checkpoint. Nothing is lost.
 
@@ -90,7 +94,7 @@ The whole pipeline is a [Temporal](https://temporal.io) workflow. Close your lap
 | **Security** | Scans for secrets, CVEs, insecure patterns; blocks PR on critical findings | Haiku |
 | **DevOps** | Branches, commits, pushes, opens PR via `gh` CLI | Haiku |
 
-Model routing is automatic: Haiku for Tier 0/1 tasks (micro fixes, simple scripts), Sonnet for Tier 2/3 (features, full-stack builds). ~10x cost reduction on simple tasks.
+Model routing is automatic: Haiku (`claude-haiku-4-5-20251001`) for Tier 0/1 tasks (micro fixes, simple scripts), Sonnet (`claude-sonnet-4-6`) for Tier 2/3 (features, full-stack builds). ~10x cost reduction on simple tasks.
 
 ---
 
@@ -134,7 +138,7 @@ Each heal cycle starts from a git snapshot taken before the cycle began. A bad h
 **Backend**
 - [Scale Agentex](https://github.com/scaleapi/scale-agentex) — agent hosting, ACP protocol, message streaming
 - [Temporal](https://temporal.io) — durable workflow orchestration, activity retries, child workflows
-- [Anthropic Claude](https://anthropic.com) (`claude-sonnet-4-6`, `claude-3-5-haiku-latest`) — all LLM reasoning
+- [Anthropic Claude](https://anthropic.com) (`claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) — all LLM reasoning
 - Python 3.12 / [uv](https://github.com/astral-sh/uv)
 
 **Frontend**
@@ -149,9 +153,20 @@ Each heal cycle starts from a git snapshot taken before the cycle began. A bad h
 ```
 Gantry/
 ├── activities/
-│   ├── swarm_activities.py          # file I/O, git, shell, web, SQL, symbol search
+│   ├── _shared.py                   # base types and shared helpers
+│   ├── file_activities.py           # read, write, patch, delete, list
+│   ├── shell_activities.py          # run_command, run_tests, lint, type-check, coverage
+│   ├── git_activities.py            # git init, diff, commit, branch, push
+│   ├── github_activities.py         # repo creation, PR open via gh CLI
+│   ├── web_activities.py            # fetch_url, brave search
+│   ├── security_activities.py       # secret scan, CVE lookup
+│   ├── index_activities.py          # symbol index build + query
+│   ├── manifest_activities.py       # Agentex manifest generation
+│   ├── swarm_activities.py          # backward-compat re-export shim
 │   ├── memory_activities.py         # facts store + episodic memory
 │   ├── classify_tier_activity.py    # LLM-based complexity classification
+│   ├── quality_score_activity.py    # LLM build quality scoring (0–10)
+│   ├── trace_activity.py            # structured agent trace recording
 │   ├── builder_planner_activity.py
 │   ├── architect_planner_activity.py
 │   ├── inspector_planner_activity.py
@@ -160,21 +175,22 @@ Gantry/
 │   └── pm_planner_activity.py
 │
 ├── workflows/
-│   ├── swarm_orchestrator.py        # Foreman — top-level pipeline
-│   ├── architect_agent.py
+│   ├── swarm_orchestrator.py        # Foreman — top-level pipeline, HITL checkpoints
+│   ├── architect_agent.py           # pre-loads PM memory before planning
 │   ├── builder_agent.py
-│   ├── inspector_agent.py
+│   ├── inspector_agent.py           # self-healing loop, dependency-skip logic
 │   ├── security_agent.py
 │   ├── devops_agent.py
 │   └── pm_agent.py
 │
 ├── project/
 │   ├── config.py                    # env vars, model constants, GH_TOKEN
+│   ├── child_workflow.py            # ApprovalWorkflow — durable HITL signal handler
 │   ├── planner.py                   # Claude tool-use loop, context management
 │   ├── complexity.py                # tier params + regex fallback
 │   ├── architect_tools.py
-│   ├── builder_tools.py             # includes verify_build, find_symbol, query_index
-│   ├── inspector_tools.py           # includes run_coverage
+│   ├── builder_tools.py             # verify_build, find_symbol, query_index
+│   ├── inspector_tools.py           # run_coverage
 │   ├── devops_tools.py
 │   ├── security_tools.py
 │   ├── pm_tools.py
@@ -191,12 +207,33 @@ Gantry/
 │   │   ├── docs/                    # platform documentation
 │   │   └── api/
 │   │       ├── projects/            # project CRUD + registry
+│   │       ├── tasks/[taskId]/
+│   │       │   ├── signal/          # Temporal approval signal proxy
+│   │       │   └── terminate/       # workflow cancellation
+│   │       ├── traces/              # agent trace retrieval
+│   │       ├── tree/                # repo file tree
 │   │       └── github/repos/        # GitHub repo proxy (PAT-authenticated)
 │   ├── components/
 │   │   ├── swarm-view.tsx           # 70/30 split: file explorer + activity feed
 │   │   ├── message-feed.tsx         # real-time agent message renderer
 │   │   ├── search-home.tsx          # goal input + project selector
 │   │   ├── sidebar.tsx
+│   │   ├── feed/                    # message-feed domain modules
+│   │   │   ├── agent-utils.ts       # parsers, regex constants, role colours
+│   │   │   ├── agent-row.tsx        # per-message renderer
+│   │   │   ├── plan-cards.tsx       # kickoff, plan-ready, launch, strategy cards
+│   │   │   ├── builder-cards.tsx    # tool-use, track-breakdown, builder-steps cards
+│   │   │   ├── hitl-cards.tsx       # approval + clarification interactive cards
+│   │   │   ├── status-indicators.tsx# pulsing dot, thinking dots, terminal banner
+│   │   │   ├── tool-icon.tsx        # tool → icon mapping
+│   │   │   └── builder-progress.ts  # shared builder progress context
+│   │   ├── swarm/                   # swarm-view domain modules
+│   │   │   ├── utils.ts             # shared types, stage parsers, file helpers
+│   │   │   ├── pipeline-tracker.tsx # animated stage pipeline with builder lanes
+│   │   │   ├── traces-panel.tsx     # structured agent trace viewer
+│   │   │   ├── context-usage.tsx    # token + cost estimation indicator
+│   │   │   ├── preview-pane.tsx     # live iframe preview with address bar
+│   │   │   └── report-card.tsx      # build report + status badge
 │   │   └── agents/
 │   │       ├── config-panel.tsx     # swarm settings + GitHub PAT
 │   │       └── agent-directory.tsx
@@ -204,6 +241,10 @@ Gantry/
 │       ├── agent-config-store.ts    # Zustand: swarm config + GitHub token
 │       ├── project-repository.ts   # project + GitHub repo API client
 │       └── use-projects.ts
+│
+├── tests/
+│   ├── test_orchestrator_guards.py  # tier-gated HITL checkpoint unit tests
+│   └── test_pipeline_integration.py # end-to-end pipeline stage transition tests
 │
 ├── manifest.yaml                    # Agentex agent manifest
 ├── dev.sh                           # dev launcher
@@ -299,6 +340,6 @@ All swarm parameters are configurable from **Agents → Settings**:
 
 ## Roadmap
 
-- **Phase 5**: Observability (structured traces per agent decision), build quality scoring (LLM eval 0–10 stored in episodic memory), multi-repo support
-- **Phase 6**: Cost budgets + estimation, pre-flight track conflict validation, agent specialisation profiles (database builder, React builder, API builder)
+- **Next**: Multi-repo support (one task touching multiple repos), pre-flight track conflict validation to detect dependency clashes before builders launch
+- **Later**: Cost budgets + pre-task estimation, agent specialisation profiles (database builder, React builder, API builder), branch-level CI integration (wait for CI green before opening PR)
 - **Production**: Supabase Postgres for project registry, persistent volume for repo files, Vercel for UI, Fly.io for worker
